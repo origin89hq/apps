@@ -46,7 +46,7 @@ struct SetupView: View {
     case .connecting:
       Progress(title: "Connecting over Bluetooth", detail: "Keep the phone near the controller.")
     case .openWindow:
-      OpenWindowView {
+      OpenWindowView(keptEnrolmentLost: flow.keptEnrolmentLost) {
         windowOpenedAt = Date()
         Task { await flow.confirmWindowOpened() }
       }
@@ -391,11 +391,17 @@ private struct CodeEntryView: View {
 }
 
 private struct OpenWindowView: View {
+  let keptEnrolmentLost: Bool
   let opened: () -> Void
   var body: some View {
     SetupPage {
       VStack(alignment: .leading, spacing: 16) {
         Heading(text: "Open the pairing window")
+        if keptEnrolmentLost {
+          Origin89Notice(
+            "This phone's earlier pairing no longer works with this controller, so it pairs again."
+          )
+        }
         Origin89Notice(
           "Press the pairing button on the controller's panel. The window stays open for 120 seconds, and pairing must finish inside it."
         )

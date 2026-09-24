@@ -31,6 +31,7 @@ private actor FakeClient: ControllerClient {
   var holdPair = false
   var pairContinuation: CheckedContinuation<Void, Never>?
   var writtenVersion: UInt32?
+  var enrolled = false
   let settings = NetworkSettings(
     version: 7, ssid: "home", passphraseSet: true, country: "CA", hostname: "unit")
   init(
@@ -53,9 +54,13 @@ private actor FakeClient: ControllerClient {
     try record(.discover)
     return ControllerSummary(deviceID: "abcd")
   }
+  func restore(from store: any EnrolmentStore) async {}
+  func isEnrolled() async -> Bool { enrolled }
+  func keep(in store: any EnrolmentStore) async throws {}
   func pair() async throws(SetupFailure) {
     try record(.pair)
-    if holdPair { await withCheckedContinuation { pairContinuation = $0 } }
+    // A held Pair is abandoned by close() before its reply arrives.
+    if holdPair { await withCheckedContinuation { pairContinuation = $0 } } else { enrolled = true }
   }
   func hello() async throws(SetupFailure) -> SessionReport {
     try record(.hello)
@@ -118,7 +123,8 @@ private struct Factory: ControllerClientFactory {
   _ client: FakeClient, clock: TestClock, transport: FakeTransport = FakeTransport()
 ) async throws -> SetupFlow {
   let flow = SetupFlow(
-    factory: Factory(fake: client), transportFactory: { transport }, clock: clock)
+    factory: Factory(fake: client), store: NoEnrolmentStore(), transportFactory: { transport },
+    clock: clock)
   try flow.submitCode("valid")
   #expect(flow.state == .connecting)
   await flow.connect()
@@ -206,7 +212,9 @@ private struct Factory: ControllerClientFactory {
   #expect(await client.calls == [.discover, .pair])
 }
 @Test @MainActor func malformedCode() {
-  let flow = SetupFlow(factory: Factory(fake: FakeClient()), transportFactory: { FakeTransport() })
+  let flow = SetupFlow(
+    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
+    transportFactory: { FakeTransport() })
   #expect(throws: SetupCodeError.malformed) { try flow.submitCode("bad") }
   #expect(flow.state == .enterCode)
 }
@@ -259,7 +267,8 @@ private struct Factory: ControllerClientFactory {
 
 @Test @MainActor func bluetoothUnavailableDuringConnection() async throws {
   let flow = SetupFlow(
-    factory: Factory(fake: FakeClient()), transportFactory: { FakeTransport(failure: .unreachable) }
+    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
+    transportFactory: { FakeTransport(failure: .unreachable) }
   )
   try flow.submitCode("valid")
   #expect(flow.state == .connecting)
@@ -475,7 +484,8 @@ private struct Factory: ControllerClientFactory {
 @Test @MainActor func backgroundBeforeConnectingOpensNothing() async throws {
   let transport = FakeTransport()
   let flow = SetupFlow(
-    factory: Factory(fake: FakeClient()), transportFactory: { transport }, clock: TestClock())
+    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
+    transportFactory: { transport }, clock: TestClock())
   await flow.suspend()
   try flow.submitCode("valid")
   await flow.suspend()

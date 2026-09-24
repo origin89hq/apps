@@ -1,0 +1,197 @@
+import Foundation
+import Testing
+
+@testable import SetupKit
+
+/// Keeps nothing: every launch pairs.
+struct NoEnrolmentStore: EnrolmentStore {
+  func load(deviceID: String) -> Data? { nil }
+  func save(_ enrolment: Data, deviceID: String) throws {}
+}
+
+/// Keeps entries in memory, or refuses every save.
+final class MemoryEnrolmentStore: EnrolmentStore, @unchecked Sendable {
+  struct Refused: Error {}
+  private let lock = NSLock()
+  private var entries: [String: Data]
+  private let refusesSaves: Bool
+  init(_ entries: [String: Data] = [:], refusesSaves: Bool = false) {
+    self.entries = entries
+    self.refusesSaves = refusesSaves
+  }
+  subscript(deviceID: String) -> Data? { lock.withLock { entries[deviceID] } }
+  func load(deviceID: String) -> Data? { self[deviceID] }
+  func save(_ enrolment: Data, deviceID: String) throws {
+    if refusesSaves { throw Refused() }
+    lock.withLock { entries[deviceID] = enrolment }
+  }
+}
+
+private actor Transport: FrameTransport {
+  func open() async throws(TransportError) {}
+  func send(_ frame: Data) async throws(TransportError) {}
+  func receive() async throws(TransportError) -> Data { Data() }
+  func close() async {}
+}
+
+/// Holds a credential the way the Rust engine does: the setup code, a kept
+/// enrolment not yet proven, or an enrolment.
+private actor KeptClient: ControllerClient {
+  enum Credential: Equatable {
+    case code
+    case kept(Data)
+    case enrolled(Data)
+  }
+  /// What the controller does with a kept enrolment.
+  enum Controller { case accepts, otherEpoch, refusesHello, wasReset }
+  static let deviceID = "abcd"
+  static let paired = Data([0x01, 0xAA])
+  let controller: Controller
+  private(set) var credential = Credential.code
+  private(set) var calls: [String] = []
+  init(_ controller: Controller) { self.controller = controller }
+
+  func restore(from store: any EnrolmentStore) async {
+    if let kept = store.load(deviceID: Self.deviceID) { credential = .kept(kept) }
+  }
+  func isEnrolled() async -> Bool { credential != .code }
+  func keep(in store: any EnrolmentStore) async throws {
+    guard case .enrolled(let bytes) = credential else { return }
+    try store.save(bytes, deviceID: Self.deviceID)
+  }
+  func discover() async throws(SetupFailure) -> ControllerSummary {
+    calls.append("discover")
+    if controller == .wasReset { throw .controllerReset }
+    if case .kept = credential, controller == .otherEpoch { credential = .code }
+    return ControllerSummary(deviceID: Self.deviceID)
+  }
+  func pair() async throws(SetupFailure) {
+    calls.append("pair")
+    credential = .enrolled(Self.paired)
+  }
+  func hello() async throws(SetupFailure) -> SessionReport {
+    calls.append("hello")
+    if case .kept(let bytes) = credential {
+      guard controller != .refusesHello else {
+        credential = .code
+        throw .enrolmentRefused
+      }
+      credential = .enrolled(bytes)
+    }
+    return SessionReport(reportsWiFi: false)
+  }
+  func readNetwork() async throws(SetupFailure) -> NetworkSettings {
+    calls.append("read")
+    return NetworkSettings(version: 1, ssid: nil, passphraseSet: false, country: nil, hostname: nil)
+  }
+  func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan { throw .protocolError }
+  func wifiStatus() async throws(SetupFailure) -> WiFiStatus { throw .protocolError }
+  func writeNetwork(_ change: NetworkChange, expectedVersion: UInt32) async throws(SetupFailure)
+    -> UInt32
+  { expectedVersion + 1 }
+  func setTime(_ date: Date) async throws(SetupFailure) {}
+  func close() async {}
+}
+private struct Factory: ControllerClientFactory {
+  let client: KeptClient
+  func client(setupCode: String, transport: any FrameTransport) throws(SetupCodeError)
+    -> any ControllerClient
+  { client }
+}
+/// The pairing window never closes in these tests.
+@MainActor private struct OpenWindowClock: SetupClock {
+  var now: Duration { .zero }
+  func sleep(until deadline: Duration) async throws { throw CancellationError() }
+}
+
+private let kept = Data([0x01, 0x55])
+private let editing = SetupFlow.State.editingNetwork(
+  NetworkSettings(version: 1, ssid: nil, passphraseSet: false, country: nil, hostname: nil))
+
+@MainActor private func connected(_ client: KeptClient, _ store: MemoryEnrolmentStore) async throws
+  -> SetupFlow
+{
+  let transport = Transport()
+  let flow = SetupFlow(
+    factory: Factory(client: client), store: store, transportFactory: { transport },
+    clock: OpenWindowClock())
+  try flow.submitCode("valid")
+  await flow.connect()
+  return flow
+}
+
+/// The failure the issue came from: a relaunch with the enrolment kept goes
+/// to the network without asking for the pairing window.
+@Test @MainActor func aKeptEnrolmentSkipsThePairingWindow() async throws {
+  let client = KeptClient(.accepts)
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let flow = try await connected(client, store)
+  #expect(flow.state == editing)
+  #expect(await client.calls == ["discover", "hello", "read"])
+  #expect(!flow.keptEnrolmentLost)
+  #expect(store[KeptClient.deviceID] == kept)
+}
+
+@Test @MainActor func aSuccessfulPairIsKept() async throws {
+  let client = KeptClient(.accepts)
+  let store = MemoryEnrolmentStore()
+  let flow = try await connected(client, store)
+  #expect(flow.state == .openWindow)
+  #expect(!flow.keptEnrolmentLost)
+  await flow.confirmWindowOpened()
+  #expect(flow.state == editing)
+  #expect(store[KeptClient.deviceID] == KeptClient.paired)
+}
+
+/// P-222: a kept enrolment for another epoch pairs again on the same
+/// connection, and the new enrolment replaces it.
+@Test @MainActor func aKeptEnrolmentForAnotherEpochPairsAgain() async throws {
+  let client = KeptClient(.otherEpoch)
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let flow = try await connected(client, store)
+  #expect(flow.state == .openWindow)
+  #expect(flow.keptEnrolmentLost)
+  #expect(await client.calls == ["discover"])
+  await flow.confirmWindowOpened()
+  #expect(flow.state == editing)
+  #expect(await client.calls == ["discover", "discover", "pair", "hello", "read"])
+  #expect(store[KeptClient.deviceID] == KeptClient.paired)
+}
+
+/// A refused Hello asks for the window; the old entry stays until the new
+/// Pair succeeds.
+@Test @MainActor func aRefusedKeptEnrolmentPairsAfterTheWindowOpens() async throws {
+  let client = KeptClient(.refusesHello)
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let flow = try await connected(client, store)
+  #expect(flow.state == .failed(.enrolmentRefused, .openWindow))
+  #expect(flow.keptEnrolmentLost)
+  #expect(store[KeptClient.deviceID] == kept)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  await flow.confirmWindowOpened()
+  #expect(flow.state == editing)
+  #expect(store[KeptClient.deviceID] == KeptClient.paired)
+  await flow.reset()
+  #expect(!flow.keptEnrolmentLost)
+}
+
+@Test @MainActor func aStoreThatCannotSaveStillFinishesPairing() async throws {
+  let client = KeptClient(.accepts)
+  let store = MemoryEnrolmentStore(refusesSaves: true)
+  let flow = try await connected(client, store)
+  await flow.confirmWindowOpened()
+  #expect(flow.state == editing)
+  #expect(store[KeptClient.deviceID] == nil)
+}
+
+/// Reset after this session paired: the printed secret is gone, so the only
+/// way on is scanning the code again.
+@Test @MainActor func aResetControllerSendsThePersonBackToTheCode() async throws {
+  let client = KeptClient(.wasReset)
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let flow = try await connected(client, store)
+  #expect(flow.state == .failed(.controllerReset, .enterCode))
+  await flow.retry()
+  #expect(flow.state == .enterCode)
+}

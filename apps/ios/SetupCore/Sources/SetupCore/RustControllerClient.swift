@@ -3,7 +3,8 @@ import Origin89SetupCore
 import SetupKit
 
 /// Builds a ``SetupKit/ControllerClient`` over the Rust KM43 core. Keys, the
-/// printed secret and the session stay in Rust; this side only moves frames.
+/// printed secret and the session stay in Rust; this side moves frames, and
+/// the encoded enrolment between the core and the store.
 public struct RustControllerClientFactory: ControllerClientFactory {
   /// What the controller lists this phone as. A re-pair with the same label
   /// reclaims the same row (P-078), so it must be stable and distinct per device.
@@ -36,6 +37,21 @@ actor RustControllerClient: ControllerClient {
   init(session: Origin89SetupCore.SetupSession, transport: any FrameTransport) {
     self.session = session
     self.transport = transport
+  }
+
+  func restore(from store: any EnrolmentStore) async {
+    guard var kept = store.load(deviceID: session.deviceId()) else { return }
+    defer { kept.resetBytes(in: kept.startIndex..<kept.endIndex) }
+    // Refused bytes leave the session pairing, which `isEnrolled()` reports.
+    _ = session.restoreKept(kept: kept)
+  }
+
+  func isEnrolled() async -> Bool { session.isEnrolled() }
+
+  func keep(in store: any EnrolmentStore) async throws {
+    guard var kept = session.keptEnrolment() else { return }
+    defer { kept.resetBytes(in: kept.startIndex..<kept.endIndex) }
+    try store.save(kept, deviceID: session.deviceId())
   }
 
   func discover() async throws(SetupKit.SetupFailure) -> SetupKit.ControllerSummary {
@@ -196,6 +212,8 @@ actor RustControllerClient: ControllerClient {
     case .StaleVersion: .staleVersion
     case .InvalidConfig: .invalidConfig
     case .ControllerMismatch: .controllerMismatch
+    case .EnrolmentRefused: .enrolmentRefused
+    case .ControllerReset: .controllerReset
     case .ConnectionDropped: .connectionDropped
     case .TimeRejected: .timeRejected
     case .TimeNeedsButton: .timeNeedsButton

@@ -25,6 +25,12 @@ import Observation
 /// enrolled, a reconnect runs Discover and Hello again with the enrolment the
 /// client keeps; it never pairs twice.
 ///
+/// A `Pair` that succeeds leaves its enrolment in the store, and a later
+/// launch that scans the same controller's code greets it with `Hello` and no
+/// pairing window (P-222). When the kept enrolment is for another epoch or the
+/// controller refuses it, the flow pairs with the scanned code, and the new
+/// enrolment replaces the old one.
+///
 /// On a controller that reports Wi-Fi (P-216) the flow also reads what its
 /// radio hears while the network is edited, and watches the join after a
 /// write. Both run in one background task that every other step stops and
@@ -73,11 +79,14 @@ import Observation
   public private(set) var scan: NetworkScan?
   public private(set) var isScanning = false
   public private(set) var join: JoinWatch = .idle
+  /// A kept enrolment could not be used, so this phone pairs again.
+  public private(set) var keptEnrolmentLost = false
   /// The network version this session wrote, kept across Time failures.
   public var writtenVersion: UInt32? {
     if case .written(let version) = resume { version } else { nil }
   }
   private let factory: any ControllerClientFactory
+  private let store: any EnrolmentStore
   private let transportFactory: @MainActor @Sendable () -> any FrameTransport
   private let clock: any SetupClock
   private var transport: (any FrameTransport)?
@@ -85,6 +94,8 @@ import Observation
   /// True from the moment `open()` is called until the one `close()` for it.
   private var transportActive = false
   private var resume: Resume = .pair
+  /// Set by a new code: the next connect first looks for a kept enrolment.
+  private var restorePending = false
   private var generation = 0
   private var isConnecting = false
   private var deadlineTask: Task<Void, Never>?
@@ -93,10 +104,12 @@ import Observation
 
   public init(
     factory: any ControllerClientFactory,
+    store: any EnrolmentStore,
     transportFactory: @escaping @MainActor @Sendable () -> any FrameTransport,
     clock: any SetupClock = SystemSetupClock()
   ) {
     self.factory = factory
+    self.store = store
     self.transportFactory = transportFactory
     self.clock = clock
   }
@@ -107,17 +120,25 @@ import Observation
     client = try factory.client(setupCode: code, transport: transport)
     self.transport = transport
     resume = .pair
+    restorePending = true
     state = .connecting
   }
 
   /// Open the connection. Before enrolment the next step is the pairing
-  /// window; after it, a new session resumes where the last one stopped.
-  /// Every connect starts with no excluded peers.
+  /// window; after it, or with a kept enrolment, a new session resumes where
+  /// the last one stopped. Every connect starts with no excluded peers.
   public func connect() async {
-    guard state == .connecting, !isConnecting, let transport else { return }
+    guard state == .connecting, !isConnecting, let transport, let client else { return }
     isConnecting = true
     let operation = generation
     defer { if generation == operation { isConnecting = false } }
+    if restorePending {
+      restorePending = false
+      await client.restore(from: store)
+      guard generation == operation else { return }
+    }
+    let greets = await client.isEnrolled()
+    guard generation == operation else { return }
     await closeTransport()
     await (transport as? any PeerExcludingTransport)?.clearExcludedPeers()
     transportActive = true
@@ -134,7 +155,7 @@ import Observation
       await closeTransport()
       return
     }
-    if resume == .pair {
+    if resume == .pair, !greets {
       state = .openWindow
     } else {
       isConnecting = false
@@ -161,6 +182,8 @@ import Observation
       state = .pairing
       try await client.pair()
       guard generation == operation else { return }
+      await keep(client)
+      guard generation == operation else { return }
       guard clock.now < deadline else {
         state = .failed(.windowClosed, .openWindow)
         await close()
@@ -180,8 +203,15 @@ import Observation
     }
   }
 
-  /// Discover and Hello on a new connection with the retained enrolment,
-  /// then continue from `resume`.
+  /// Keep the enrolment `Pair` just produced, replacing any older one.
+  private func keep(_ client: any ControllerClient) async {
+    // A phone that cannot keep it still finishes setup, and pairs again on
+    // its next launch.
+    try? await client.keep(in: store)
+  }
+
+  /// Discover and Hello on a new connection with the retained or kept
+  /// enrolment, then continue from `resume`.
   private func openSession(_ operation: Int) async {
     guard let client else { return }
     do {
@@ -189,6 +219,14 @@ import Observation
       let discovered = try await discover(client, operation)
       guard generation == operation else { return }
       controller = discovered
+      // A kept enrolment for another epoch (P-222): pair on this connection.
+      guard await client.isEnrolled() else {
+        guard generation == operation else { return }
+        keptEnrolmentLost = true
+        state = .openWindow
+        return
+      }
+      guard generation == operation else { return }
       state = .greeting
       let report = try await client.hello()
       guard generation == operation else { return }
@@ -199,8 +237,10 @@ import Observation
       return
     }
     switch resume {
-    case .pair: state = .openWindow
-    case .readNetwork: await readNetwork()
+    // A kept enrolment's first session goes on to the network, as Pair does.
+    case .pair, .readNetwork:
+      resume = .readNetwork
+      await readNetwork()
     case .written(let version):
       state = .written(version)
       if join == .waiting { watchJoin(version) }
@@ -475,6 +515,8 @@ import Observation
     scan = nil
     join = .idle
     resume = .pair
+    restorePending = false
+    keptEnrolmentLost = false
     state = .enterCode
   }
 
@@ -507,6 +549,10 @@ import Observation
     case .controllerMismatch:
       // Retrying connects again with no excluded peers.
       target = transport is any PeerExcludingTransport ? .connecting : .enterCode
+    case .enrolmentRefused:
+      keptEnrolmentLost = true
+      target = .openWindow
+    case .controllerReset: target = .enterCode
     case .windowClosed, .tableFull: target = .openWindow
     case .staleVersion:
       target = .readingNetwork
@@ -524,7 +570,8 @@ import Observation
   /// The retry target once a failure's connection is gone.
   private func target(forLost failure: SetupFailure) -> RetryTarget {
     switch failure {
-    case .windowClosed, .tableFull: .openWindow
+    case .windowClosed, .tableFull, .enrolmentRefused: .openWindow
+    case .controllerReset: .enterCode
     default: .connecting
     }
   }

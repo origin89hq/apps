@@ -6,6 +6,7 @@ import SwiftUI
 struct Origin89App: App {
   @State private var flow = SetupFlow(
     factory: RustControllerClientFactory(label: DeviceLabel.current),
+    store: KeychainEnrolmentStore(),
     transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) })
 
   var body: some Scene {

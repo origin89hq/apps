@@ -37,7 +37,14 @@ private actor WiFiClient: ControllerClient {
     calls.append(.discover)
     return ControllerSummary(deviceID: "abcd")
   }
-  func pair() async throws(SetupFailure) { calls.append(.pair) }
+  private var enrolled = false
+  func restore(from store: any EnrolmentStore) async {}
+  func isEnrolled() async -> Bool { enrolled }
+  func keep(in store: any EnrolmentStore) async throws {}
+  func pair() async throws(SetupFailure) {
+    calls.append(.pair)
+    enrolled = true
+  }
   func hello() async throws(SetupFailure) -> SessionReport {
     calls.append(.hello)
     return SessionReport(reportsWiFi: reportsWiFi)
@@ -102,7 +109,8 @@ private let complete = NetworkScan(progress: .complete, networks: [cabin], unlis
 {
   let transport = Transport()
   let flow = SetupFlow(
-    factory: Factory(client: client), transportFactory: { transport }, clock: clock)
+    factory: Factory(client: client), store: NoEnrolmentStore(), transportFactory: { transport },
+    clock: clock)
   try flow.submitCode("valid")
   await flow.connect()
   await flow.confirmWindowOpened()

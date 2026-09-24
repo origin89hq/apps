@@ -19,6 +19,10 @@ public protocol PeerExcludingTransport: FrameTransport {
 public enum SetupCodeError: Error, Sendable, Equatable { case malformed }
 public enum SetupFailure: Error, Sendable, Equatable {
   case windowClosed, wrongProof, tableFull, staleVersion, invalidConfig, controllerMismatch
+  /// The controller refused the enrolment kept from an earlier launch.
+  case enrolmentRefused
+  /// The controller was factory reset after this session paired.
+  case controllerReset
   case bluetoothUnavailable, connectionDropped, timedOut, protocolError, timeRejected,
     timeNeedsButton
 
@@ -35,6 +39,10 @@ public enum SetupFailure: Error, Sendable, Equatable {
       "The controller refused these network settings. Check the fields and try again."
     case .controllerMismatch:
       "Another controller answered. Move closer to the controller whose code you scanned and try again."
+    case .enrolmentRefused:
+      "The controller no longer accepts this phone's pairing. Open the pairing window to pair again."
+    case .controllerReset:
+      "The controller was reset since this phone paired. Scan its setup code to pair again."
     case .bluetoothUnavailable:
       "Bluetooth is unavailable or the controller was not found. Check Bluetooth permission and move closer."
     case .connectionDropped: "The Bluetooth connection was lost. Reconnect to the controller."
@@ -83,7 +91,25 @@ public struct NetworkChange: Sendable, Equatable {
     return passphrase != nil || (ssid == settings.ssid && settings.passphraseSet)
   }
 }
+/// Where enrolments are kept between launches, one per controller `device_id`
+/// (P-222). What goes in is the encoded enrolment the core hands over, never a
+/// setup code.
+public protocol EnrolmentStore: Sendable {
+  /// The enrolment kept for `deviceID`, or nil when there is none or it cannot
+  /// be read.
+  func load(deviceID: String) -> Data?
+  /// Keep `enrolment` for `deviceID`, replacing any older entry.
+  func save(_ enrolment: Data, deviceID: String) throws
+}
 public protocol ControllerClient: Sendable {
+  /// Take the enrolment `store` kept for this controller, before the first
+  /// `discover()`. One that is missing or unreadable leaves the client pairing.
+  func restore(from store: any EnrolmentStore) async
+  /// Whether the next session greets instead of pairing: enrolled, or holding
+  /// a kept enrolment the controller has not refused.
+  func isEnrolled() async -> Bool
+  /// After `pair()`, keep the enrolment in `store`.
+  func keep(in store: any EnrolmentStore) async throws
   func discover() async throws(SetupFailure) -> ControllerSummary
   func pair() async throws(SetupFailure)
   func hello() async throws(SetupFailure) -> SessionReport

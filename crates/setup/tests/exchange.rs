@@ -1485,3 +1485,252 @@ fn a_frame_for_another_request_leaves_the_scan_outstanding() {
     let reply = controller.reply(MessageType::WifiScanResponse, req, &answer);
     assert!(engine.wifi_scan_reply(&reply).unwrap().is_some());
 }
+
+/// Pair a fresh engine and return what it hands over to keep.
+fn kept_after_pairing(controller: &mut Controller) -> Vec<u8> {
+    let mut engine = engine();
+    assert!(
+        engine.kept_enrolment().is_none(),
+        "nothing to keep before Pair"
+    );
+    open_session(&mut engine, controller, b16("/inputs/next_challenge"));
+    engine.kept_enrolment().expect("enrolled").to_vec()
+}
+
+/// A relaunched engine: the setup code scanned again, and the kept enrolment.
+fn relaunched(kept: &[u8]) -> Engine {
+    let mut engine = engine();
+    assert!(engine.restore_kept(kept));
+    assert!(engine.is_enrolled());
+    engine
+}
+
+fn discover(engine: &mut Engine, controller: &Controller) -> bool {
+    let request = engine.discover_request().unwrap();
+    engine
+        .discover_reply(&controller.discover(&request))
+        .unwrap()
+        .unwrap()
+        .enrolled
+}
+
+fn pair(engine: &mut Engine, controller: &mut Controller) {
+    let request = engine.pair_request().unwrap();
+    let ack = controller.pair(
+        &request,
+        Outcome::Reclaimed(ClientId::new(CLIENT_ID).unwrap()),
+        b16("/inputs/next_challenge"),
+    );
+    engine.pair_reply(&ack).unwrap().unwrap();
+}
+
+fn bare_error(request: &[u8]) -> Vec<u8> {
+    let mut frame = buffer();
+    let len = ErrorBody {
+        code: Incoming::Client(ErrorCode::UnknownClient),
+        detail: "unknown client",
+    }
+    .write(
+        Controller::header(MessageType::ErrorResponse, req_of(request)),
+        &mut frame,
+    )
+    .unwrap();
+    finished(frame, len)
+}
+
+/// The failure the issue came from: an app that paired, quit and relaunched
+/// could only pair again, which needs a person at the panel (P-066).
+#[test]
+fn a_kept_enrolment_says_hello_without_pairing() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = relaunched(&kept);
+    assert!(discover(&mut engine, &controller));
+    assert_eq!(
+        engine.pair_request().unwrap_err(),
+        SetupFailure::ProtocolError,
+        "an engine greeting with a kept key does not pair"
+    );
+    assert!(engine.kept_enrolment().is_none(), "unproven until Hello");
+    let request = engine.hello_request().unwrap();
+    engine
+        .hello_reply(&controller.hello(&request))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine.kept_enrolment().expect("proven").as_slice(),
+        kept.as_slice()
+    );
+    read_unwritten(&mut engine, &controller);
+}
+
+#[test]
+fn the_kept_bytes_hold_no_printed_secret() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    assert_eq!(kept.len(), km43::StoredEnrolment::LEN);
+    let secret = bytes("/inputs/printed_secret");
+    assert!(
+        !kept
+            .windows(4)
+            .any(|window| secret.windows(4).any(|s| s == window)),
+        "four bytes of the printed secret are in storage"
+    );
+}
+
+/// P-222: once a kept key's Hello succeeds the setup code goes, as it does
+/// after Pair. A reset then cannot be paired through without scanning again.
+#[test]
+fn a_proven_kept_enrolment_drops_the_setup_code() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = relaunched(&kept);
+    assert!(discover(&mut engine, &controller));
+    let request = engine.hello_request().unwrap();
+    engine
+        .hello_reply(&controller.hello(&request))
+        .unwrap()
+        .unwrap();
+    engine.reset_link();
+    controller.epoch = Epoch::new(2).unwrap();
+    let request = engine.discover_request().unwrap();
+    assert_eq!(
+        engine
+            .discover_reply(&controller.discover(&request))
+            .unwrap_err(),
+        SetupFailure::ControllerReset
+    );
+    assert!(!engine.is_enrolled());
+}
+
+/// P-222, P-085: a key kept before a factory reset is not sent; the engine
+/// pairs with the code in hand and hands over the new key to keep.
+#[test]
+fn a_kept_enrolment_for_another_epoch_pairs_again() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    for epoch in [2, 1] {
+        let mut engine = relaunched(&kept);
+        let mut reset = Controller::new();
+        reset.epoch = Epoch::new(epoch + 1).unwrap();
+        reset.challenge = controller.challenge;
+        assert!(!discover(&mut engine, &reset), "epoch {}", epoch + 1);
+        assert!(!engine.is_enrolled());
+        assert_eq!(
+            engine.hello_request().unwrap_err(),
+            SetupFailure::ProtocolError,
+            "no Hello under a key for another epoch"
+        );
+        pair(&mut engine, &mut reset);
+        let replaced = engine.kept_enrolment().expect("paired again");
+        assert_ne!(replaced.as_slice(), kept.as_slice());
+    }
+}
+
+/// The controller answers a kept key it will not take with an `Error`; the
+/// engine drops the key and pairs with the setup code on the next link.
+#[test]
+fn a_refused_kept_enrolment_falls_back_to_pairing() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = relaunched(&kept);
+    assert!(discover(&mut engine, &controller));
+    let request = engine.hello_request().unwrap();
+    assert_eq!(
+        engine.hello_reply(&bare_error(&request)).unwrap_err(),
+        SetupFailure::EnrolmentRefused
+    );
+    assert!(!engine.is_enrolled());
+    assert!(engine.kept_enrolment().is_none());
+    engine.reset_link();
+    assert!(!discover(&mut engine, &controller));
+    pair(&mut engine, &mut controller);
+    assert!(engine.kept_enrolment().is_some());
+}
+
+/// After a Pair in this session the same `Error` is the reconnect hint it
+/// always was, not a reason to forget the enrolment.
+#[test]
+fn an_error_answering_hello_after_pairing_keeps_the_enrolment() {
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    assert!(!discover(&mut engine, &controller));
+    pair(&mut engine, &mut controller);
+    let request = engine.hello_request().unwrap();
+    assert_eq!(
+        engine.hello_reply(&bare_error(&request)).unwrap_err(),
+        SetupFailure::ConnectionDropped
+    );
+    assert!(engine.is_enrolled());
+    engine.reset_link();
+    assert!(discover(&mut engine, &controller));
+}
+
+#[test]
+fn unreadable_kept_bytes_leave_the_engine_pairing() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut unknown_format = kept.clone();
+    unknown_format[0] ^= 0xFF;
+    let mut zero_client = kept.clone();
+    // Format, device_id and epoch come first; client_id is the next four bytes.
+    zero_client[21..25].fill(0);
+    let cases: [&[u8]; 5] = [
+        &[],
+        &kept[..kept.len() - 1],
+        &[kept.as_slice(), &[0]].concat(),
+        &unknown_format,
+        &zero_client,
+    ];
+    for bytes in cases {
+        let mut engine = engine();
+        assert!(!engine.restore_kept(bytes), "{} bytes taken", bytes.len());
+        assert!(!engine.is_enrolled());
+        assert!(!discover(&mut engine, &controller));
+        engine.pair_request().unwrap();
+    }
+}
+
+#[test]
+fn kept_bytes_are_taken_only_before_the_first_frame() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+
+    let mut discovering = engine();
+    discovering.discover_request().unwrap();
+    assert!(!discovering.restore_kept(&kept), "taken mid-Discover");
+
+    let mut discovered = engine();
+    assert!(!discover(&mut discovered, &controller));
+    assert!(!discovered.restore_kept(&kept), "taken after Discover");
+    discovered.reset_link();
+    assert!(!discovered.restore_kept(&kept), "taken on a later link");
+
+    let mut engine = relaunched(&kept);
+    assert!(!engine.restore_kept(&kept), "taken twice");
+    assert!(discover(&mut engine, &controller));
+}
+
+/// A reset while this session is enrolled leaves nothing to prove with: the
+/// printed secret went at Pair, so the setup code has to be scanned again.
+#[test]
+fn a_reset_after_pairing_ends_the_session() {
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    assert!(!discover(&mut engine, &controller));
+    pair(&mut engine, &mut controller);
+    engine.reset_link();
+    controller.epoch = Epoch::new(2).unwrap();
+    for _ in 0..2 {
+        let request = engine.discover_request().unwrap();
+        assert_eq!(
+            engine
+                .discover_reply(&controller.discover(&request))
+                .unwrap_err(),
+            SetupFailure::ControllerReset
+        );
+        assert!(!engine.is_enrolled());
+        assert!(engine.kept_enrolment().is_none());
+        engine.reset_link();
+    }
+}

@@ -6,7 +6,9 @@
 //!
 //! The wire format is the `km43` crate, the one the controller itself speaks.
 //! Keys and session state stay in Rust; Swift sends and receives opaque frames
-//! and gets typed results.
+//! and gets typed results. The one exception is the encoded enrolment Swift
+//! keeps in the Keychain between launches (P-222): the issued key, never the
+//! printed secret.
 //!
 //! # Binding
 //!
@@ -28,6 +30,8 @@ mod engine;
 mod wifi;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use zeroize::Zeroize as _;
 
 pub use ble::*;
 pub use code::*;
@@ -64,10 +68,28 @@ impl SetupSession {
         self.engine().device_id().to_string()
     }
 
-    /// Whether the controller has enrolled this client; the printed secret is
-    /// gone from then on.
+    /// Whether the next session greets with `Hello` rather than pairing: this
+    /// client was enrolled, or holds a kept enrolment not yet refused.
     pub fn is_enrolled(&self) -> bool {
         self.engine().is_enrolled()
+    }
+
+    /// Take the enrolment an earlier launch kept, before this session sends
+    /// its first frame. Returns whether it was taken; when it was not, the
+    /// session pairs with the setup code. The bytes are cleared here either way.
+    pub fn restore_kept(&self, mut kept: Vec<u8>) -> bool {
+        let taken = self.engine().restore_kept(&kept);
+        kept.zeroize();
+        taken
+    }
+
+    /// The enrolment to keep, once `Pair` or a kept enrolment's `Hello` has
+    /// succeeded: the issued key with its `device_id`, `epoch` and `client_id`,
+    /// never the printed secret (P-222). Clear the copy once storage has it.
+    pub fn kept_enrolment(&self) -> Option<Vec<u8>> {
+        // The encoding clears itself on drop; the copy crossing to Swift is the
+        // caller's to clear.
+        self.engine().kept_enrolment().map(|bytes| bytes.to_vec())
     }
 
     /// Forget the connection and any session, keeping the enrolment. Call it

@@ -18,7 +18,11 @@ import Testing
     guard let peer = driver.peer, peer == right else { throw .controllerMismatch }
     return ControllerSummary(deviceID: "abcd")
   }
-  func pair() async throws(SetupFailure) {}
+  private var enrolled = false
+  func restore(from store: any EnrolmentStore) async {}
+  func isEnrolled() async -> Bool { enrolled }
+  func keep(in store: any EnrolmentStore) async throws {}
+  func pair() async throws(SetupFailure) { enrolled = true }
   func hello() async throws(SetupFailure) -> SessionReport { SessionReport(reportsWiFi: false) }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan { throw .protocolError }
   func wifiStatus() async throws(SetupFailure) -> WiFiStatus { throw .protocolError }
@@ -53,7 +57,8 @@ private struct PeerFactory: ControllerClientFactory {
     codec: FakeCodec(), driver: driver, timeout: .milliseconds(20))
   let client = PeerClient(driver: driver, right: right)
   let flow = SetupFlow(
-    factory: PeerFactory(client: client), transportFactory: { transport },
+    factory: PeerFactory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { transport },
     clock: OpenWindowClock())
   try flow.submitCode("km43:1:code")
   return (flow, driver, client)
@@ -117,7 +122,8 @@ private struct PeerFactory: ControllerClientFactory {
     codec: FakeCodec(), driver: driver, timeout: .milliseconds(20))
   let client = PeerClient(driver: driver, right: nil)
   let flow = SetupFlow(
-    factory: PeerFactory(client: client), transportFactory: { transport },
+    factory: PeerFactory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { transport },
     clock: ShortWindowClock())
   try flow.submitCode("km43:1:code")
   await flow.connect()
