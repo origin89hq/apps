@@ -1,0 +1,132 @@
+import Foundation
+import Origin89SetupCore
+import SetupKit
+
+/// Builds a ``SetupKit/ControllerClient`` over the Rust KM43 core. Keys, the
+/// printed secret and the session stay in Rust; this side only moves frames.
+public struct RustControllerClientFactory: ControllerClientFactory {
+  /// What the controller lists this phone as. A re-pair with the same label
+  /// reclaims the same row (P-078), so it must be stable and distinct per device.
+  public let label: String
+
+  public init(label: String) { self.label = label }
+
+  public func client(setupCode: String, transport: any FrameTransport)
+    throws(SetupKit.SetupCodeError)
+    -> any ControllerClient
+  {
+    let session: Origin89SetupCore.SetupSession
+    do {
+      session = try Origin89SetupCore.SetupSession(setupCode: setupCode, label: label)
+    } catch {
+      throw .malformed
+    }
+    return RustControllerClient(session: session, transport: transport)
+  }
+}
+
+/// One controller, one Rust `SetupSession`, driven over a ``FrameTransport``.
+actor RustControllerClient: ControllerClient {
+  /// Frames that answer nothing outstanding (P-024) before a step gives up.
+  private static let ignoredFrameLimit = 16
+
+  private let session: Origin89SetupCore.SetupSession
+  private let transport: any FrameTransport
+
+  init(session: Origin89SetupCore.SetupSession, transport: any FrameTransport) {
+    self.session = session
+    self.transport = transport
+  }
+
+  func discover() async throws(SetupKit.SetupFailure) -> SetupKit.ControllerSummary {
+    // Every discover starts a fresh link: the transport may have reconnected.
+    session.resetLink()
+    let found = try await exchange(session.discoverRequest, session.discoverReply)
+    return SetupKit.ControllerSummary(deviceID: found.deviceId)
+  }
+
+  func pair() async throws(SetupKit.SetupFailure) {
+    // After a reconnect an enrolled session goes straight to Hello.
+    guard !session.isEnrolled() else { return }
+    _ = try await exchange(session.pairRequest, session.pairReply)
+  }
+
+  func hello() async throws(SetupKit.SetupFailure) {
+    _ = try await exchange(session.helloRequest, session.helloReply)
+  }
+
+  func readNetwork() async throws(SetupKit.SetupFailure) -> SetupKit.NetworkSettings {
+    let read = try await exchange(session.readNetworkRequest, session.readNetworkReply)
+    return SetupKit.NetworkSettings(
+      version: read.version, ssid: read.ssid, passphraseSet: read.passphraseSet,
+      country: read.country, hostname: read.hostname)
+  }
+
+  func writeNetwork(_ change: SetupKit.NetworkChange, expectedVersion: UInt32)
+    async throws(SetupKit.SetupFailure) -> UInt32
+  {
+    let rust = Origin89SetupCore.NetworkChange(
+      ssid: change.ssid, passphrase: change.passphrase, country: change.country,
+      hostname: change.hostname)
+    let session = self.session
+    return try await exchange(
+      { try session.writeNetworkRequest(change: rust, expectedVersion: expectedVersion) },
+      session.writeNetworkReply)
+  }
+
+  func setTime(_ date: Date) async throws(SetupKit.SetupFailure) {
+    let milliseconds = (date.timeIntervalSince1970 * 1000).rounded(.down)
+    // A date before 1970 or past the u64 range is no time the controller accepts.
+    guard let atMs = UInt64(exactly: milliseconds) else { throw .timeRejected }
+    let session = self.session
+    _ = try await exchange({ try session.setTimeRequest(atMs: atMs) }, session.setTimeReply)
+  }
+
+  /// Abandon the session: the Rust core forgets the session key and link, and
+  /// keeps the enrolment for a later Hello. The transport is the flow's; it
+  /// opens and closes it, so this does not touch the connection.
+  func close() async { session.resetLink() }
+
+  /// Send one request and receive until the core accepts a reply to it.
+  private func exchange<Reply>(
+    _ request: () throws -> Data, _ reply: (Data) throws -> Reply?
+  ) async throws(SetupKit.SetupFailure) -> Reply {
+    let frame: Data
+    do { frame = try request() } catch { throw Self.failure(error) }
+    do { try await transport.send(frame) } catch { throw Self.failure(error) }
+    for _ in 0...Self.ignoredFrameLimit {
+      let incoming: Data
+      do { incoming = try await transport.receive() } catch { throw Self.failure(error) }
+      do {
+        if let answer = try reply(incoming) { return answer }
+      } catch {
+        throw Self.failure(error)
+      }
+    }
+    throw .protocolError
+  }
+
+  static func failure(_ error: TransportError) -> SetupKit.SetupFailure {
+    switch error {
+    case .unreachable: .bluetoothUnavailable
+    case .dropped: .connectionDropped
+    case .timedOut: .timedOut
+    }
+  }
+
+  static func failure(_ error: any Error) -> SetupKit.SetupFailure {
+    guard let failure = error as? Origin89SetupCore.SetupFailure else { return .protocolError }
+    return switch failure {
+    case .WindowClosed: .windowClosed
+    case .WrongProof: .wrongProof
+    case .TableFull: .tableFull
+    case .StaleVersion: .staleVersion
+    case .InvalidConfig: .invalidConfig
+    case .ControllerMismatch: .controllerMismatch
+    case .ConnectionDropped: .connectionDropped
+    case .TimeRejected: .timeRejected
+    case .TimeNeedsButton: .timeNeedsButton
+    case .ProtocolError: .protocolError
+    }
+  }
+}

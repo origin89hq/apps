@@ -7,3 +7,8 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Rust and the iOS core build (scripts/build-ios-core.sh)
+/target/
+/build/
+/apps/ios/SetupCore/Generated/

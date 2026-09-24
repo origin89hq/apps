@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		AB8900000000000000000001 /* Origin89UI in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000002 /* Origin89UI */; };
+		AB8900000000000000000009 /* SetupKit in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000007 /* SetupKit */; };
+		AB890000000000000000000A /* SetupCore in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000008 /* SetupCore */; };
+		AB890000000000000000000C /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000B /* SetupView.swift */; };
+		AB890000000000000000000E /* NetworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000D /* NetworkView.swift */; };
 		3B83354560E6B8315025217E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8E94264721F66A5291BC0C5B /* Assets.xcassets */; };
 		D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */; };
 /* End PBXBuildFile section */
@@ -16,13 +20,19 @@
 		8E94264721F66A5291BC0C5B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C44C2562444042C638E2A316 /* Origin89.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Origin89.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Origin89App.swift; sourceTree = "<group>"; };
+		AB890000000000000000000B /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
+		AB890000000000000000000D /* NetworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AB8900000000000000000003 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = (AB8900000000000000000001 /* Origin89UI in Frameworks */,);
+			files = (
+				AB8900000000000000000001 /* Origin89UI in Frameworks */,
+				AB8900000000000000000009 /* SetupKit in Frameworks */,
+				AB890000000000000000000A /* SetupCore in Frameworks */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -48,7 +58,9 @@
 			isa = PBXGroup;
 			children = (
 				8E94264721F66A5291BC0C5B /* Assets.xcassets */,
+				AB890000000000000000000D /* NetworkView.swift */,
 				F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */,
+				AB890000000000000000000B /* SetupView.swift */,
 			);
 			path = Origin89;
 			sourceTree = "<group>";
@@ -71,6 +83,8 @@
 			name = Origin89;
 			packageProductDependencies = (
 				AB8900000000000000000002 /* Origin89UI */,
+				AB8900000000000000000007 /* SetupKit */,
+				AB8900000000000000000008 /* SetupCore */,
 			);
 			productName = Origin89;
 			productReference = C44C2562444042C638E2A316 /* Origin89.app */;
@@ -100,7 +114,11 @@
 			mainGroup = CAD720F6C7DC41E89646872B;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			packageReferences = (AB8900000000000000000004 /* UI */,);
+			packageReferences = (
+				AB8900000000000000000004 /* UI */,
+				AB8900000000000000000005 /* XCLocalSwiftPackageReference "SetupKit" */,
+				AB8900000000000000000006 /* XCLocalSwiftPackageReference "SetupCore" */,
+			);
 			productRefGroup = C6516E3FD84BCA0F3E0309D5 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -127,6 +145,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */,
+				AB890000000000000000000C /* SetupView.swift in Sources */,
+				AB890000000000000000000E /* NetworkView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -138,7 +158,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -156,7 +178,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -296,6 +320,17 @@
 		};
 /* End XCBuildConfiguration section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		AB8900000000000000000005 /* XCLocalSwiftPackageReference "SetupKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SetupKit;
+		};
+		AB8900000000000000000006 /* XCLocalSwiftPackageReference "SetupCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SetupCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		AB8900000000000000000004 /* UI */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -312,6 +347,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AB8900000000000000000004 /* UI */;
 			productName = Origin89UI;
+		};
+		AB8900000000000000000007 /* SetupKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB8900000000000000000005 /* XCLocalSwiftPackageReference "SetupKit" */;
+			productName = SetupKit;
+		};
+		AB8900000000000000000008 /* SetupCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB8900000000000000000006 /* XCLocalSwiftPackageReference "SetupCore" */;
+			productName = SetupCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 
