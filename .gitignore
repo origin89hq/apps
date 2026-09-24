@@ -12,3 +12,6 @@ xcuserdata/
 /target/
 /build/
 /apps/ios/SetupCore/Generated/
+
+# Personal signing (see apps/ios/Signing.xcconfig)
+/apps/ios/Local.xcconfig

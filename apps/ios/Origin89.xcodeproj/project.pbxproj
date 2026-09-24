@@ -24,6 +24,7 @@
 		AB890000000000000000000F /* CodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeScannerView.swift; sourceTree = "<group>"; };
 		C44C2562444042C638E2A316 /* Origin89.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Origin89.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Origin89App.swift; sourceTree = "<group>"; };
+		291B0A8141E0F76A304D6029 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,6 +53,7 @@
 			isa = PBXGroup;
 			children = (
 				F00B56E0DCEE33A9A258AFB6 /* Origin89 */,
+				291B0A8141E0F76A304D6029 /* Signing.xcconfig */,
 				C6516E3FD84BCA0F3E0309D5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -159,6 +161,7 @@
 /* Begin XCBuildConfiguration section */
 		05AE5981987AA53464C43ED4 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 291B0A8141E0F76A304D6029 /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -174,7 +177,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.origin89.apps.ios;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -182,6 +184,7 @@
 		};
 		45F6A844AAA8FC9DD68D49D8 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 291B0A8141E0F76A304D6029 /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -197,7 +200,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.origin89.apps.ios;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

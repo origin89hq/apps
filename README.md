@@ -25,10 +25,11 @@ package until `apps/ios/SetupCore/Generated/` exists. Rebuild it with
 Select the Origin89 scheme and an iPhone simulator in Xcode, then Run. The
 Rust core is built for arm64 only, so the simulator build needs an Apple silicon
 Mac.
-The deployment target is iOS 17. For a physical iPhone, select your development
-team under Signing & Capabilities and use a bundle identifier available to that
-team. Signing credentials and team IDs stay local. The scaffold uses
-`com.origin89.apps.ios`; its registration is not assumed.
+The deployment target is iOS 17. For a physical iPhone, create the gitignored
+`apps/ios/Local.xcconfig` with `DEVELOPMENT_TEAM = <your team ID>` and, if
+needed, a `PRODUCT_BUNDLE_IDENTIFIER` your team can register. Leave the Team
+field in Xcode empty; a value set there is written into the project file. The
+default identifier is `com.origin89.apps.ios`; its registration is not assumed.
 
 `just check` runs, in order:
 
