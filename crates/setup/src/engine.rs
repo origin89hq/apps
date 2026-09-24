@@ -10,6 +10,10 @@
 //! The network steps are `GetConfig` and a signed `SetConfig`; on a controller
 //! that sets capability bit 8 the engine also reads `WifiScan` and
 //! `WifiStatus` (P-216), and refuses to send either to one that does not.
+//!
+//! An enrolment kept from an earlier launch (P-222) is checked against every
+//! `Discover` before a `Hello` is sent under it. A kept key the controller
+//! does not take falls back to pairing with the setup code just scanned.
 
 use core::mem;
 
@@ -19,7 +23,8 @@ use km43::{
     Header, HelloInner, Hostname, Incoming, JoinWrite, MAX_LABEL, MAX_PAYLOAD, MAX_STRING,
     MessageType, NetworkRead, NetworkWrite, Outcome, PairAckClaim, PairRequest, Passphrase, ReqId,
     ScanRequest, Session as Opened, SessionId, SessionKey, SetConfig, SetConfigAck,
-    SetConfigOperation, Signed, Ssid, Tagged, Time, TimeAck, TimeOperation, Version, Wrapper,
+    SetConfigOperation, Signed, Ssid, StoredEnrolment, Tagged, Time, TimeAck, TimeOperation,
+    Version, Wrapper,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -62,6 +67,16 @@ pub enum SetupFailure {
     /// The controller that answered `Discover` is not the one the code names.
     #[error("the controller is not the one this setup code was printed for")]
     ControllerMismatch,
+    /// The controller answered `Hello` under the enrolment kept from an earlier
+    /// launch with an `Error`. The kept enrolment is dropped from the session and
+    /// the setup code pairs again.
+    #[error("the controller did not accept this phone's kept enrolment")]
+    EnrolmentRefused,
+    /// The controller's `Discover` reports another `epoch` than the one this
+    /// session paired at (P-085): it was factory reset, and only the setup code
+    /// can pair again.
+    #[error("the controller was reset since this phone paired")]
+    ControllerReset,
     /// The link or the session is gone: reconnect, `Discover` and `Hello` again.
     #[error("the connection to the controller was lost")]
     ConnectionDropped,
@@ -89,7 +104,11 @@ impl SetupFailure {
             | Self::InvalidConfig
             | Self::TimeRejected
             | Self::TimeNeedsButton => true,
-            Self::ControllerMismatch | Self::ConnectionDropped | Self::ProtocolError => false,
+            Self::ControllerMismatch
+            | Self::EnrolmentRefused
+            | Self::ControllerReset
+            | Self::ConnectionDropped
+            | Self::ProtocolError => false,
         }
     }
 }
@@ -99,6 +118,10 @@ impl SetupFailure {
 pub struct ControllerSummary {
     /// The `device_id`, 32 lowercase hexadecimal characters.
     pub device_id: String,
+    /// Whether the next step is `Hello` under an enrolment this `Discover`
+    /// matched. `false` means `Pair`, including when a kept enrolment was for
+    /// another `epoch`.
+    pub enrolled: bool,
 }
 
 /// The enrolment `Pair` produced.
@@ -177,6 +200,21 @@ impl NonceSource for OsNonces {
     }
 }
 
+/// What this client proves itself with.
+enum Credential {
+    /// Not enrolled: the setup code proves `Pair`.
+    Code(SetupCode),
+    /// An enrolment kept from an earlier launch that no `Hello` has proven yet.
+    /// The setup code stays for pairing again if the controller refuses it.
+    Kept {
+        stored: StoredEnrolment,
+        code: SetupCode,
+    },
+    /// Paired in this session, or kept and accepted by `Hello`. The printed
+    /// secret is gone (P-222).
+    Enrolled(StoredEnrolment),
+}
+
 /// A connection before `Hello`: its handle (P-024) and a live challenge.
 #[derive(Clone, Copy)]
 struct Link {
@@ -245,7 +283,10 @@ enum Stage {
 /// One setup session with one controller.
 pub struct Engine {
     device_id: ControllerId,
-    code: Option<SetupCode>,
+    /// `None` once an enrolment from this session meets another `epoch`: its
+    /// key is dead and the setup code is gone.
+    credential: Option<Credential>,
+    /// The enrolment the current link's `Discover` matched, for `Hello`.
     enrolment: Option<Enrolment>,
     label: String,
     client_version: String,
@@ -272,7 +313,7 @@ impl Engine {
     ) -> Self {
         Self {
             device_id: code.device_id(),
-            code: Some(code),
+            credential: Some(Credential::Code(code)),
             enrolment: None,
             label: fit_text(label, MAX_LABEL, FALLBACK_LABEL),
             client_version: fit_text(client_version, MAX_STRING, CLIENT_VERSION),
@@ -288,11 +329,57 @@ impl Engine {
         self.device_id
     }
 
-    /// Whether the controller has enrolled this client. From then on the setup
-    /// code's secret is gone.
+    /// Whether this client greets the controller with `Hello` rather than
+    /// pairing: it was enrolled in this session, or holds a kept enrolment the
+    /// controller has not refused.
     #[must_use]
     pub const fn is_enrolled(&self) -> bool {
-        self.enrolment.is_some()
+        matches!(
+            self.credential,
+            Some(Credential::Kept { .. } | Credential::Enrolled(_))
+        )
+    }
+
+    /// Take an enrolment kept from an earlier launch, as
+    /// [`Engine::kept_enrolment`] encoded it. The next `Discover` must match
+    /// its `device_id` and `epoch` before `Hello` uses it (P-222); until a
+    /// `Hello` succeeds the setup code stays, to pair again with.
+    ///
+    /// Returns whether it was taken. Bytes that do not decode are refused, and
+    /// so is a call once this session has sent a frame; the session then pairs
+    /// as if nothing was kept.
+    pub fn restore_kept(&mut self, kept: &[u8]) -> bool {
+        // `req_id` 1 is the first frame's (P-022): none has been built yet.
+        if self.next_req != 1 {
+            return false;
+        }
+        let Ok(stored) = StoredEnrolment::decode(kept) else {
+            return false;
+        };
+        match self.credential.take() {
+            Some(Credential::Code(code)) => {
+                self.credential = Some(Credential::Kept { stored, code });
+                true
+            }
+            other @ (Some(Credential::Kept { .. } | Credential::Enrolled(_)) | None) => {
+                self.credential = other;
+                false
+            }
+        }
+    }
+
+    /// The enrolment to keep across a restart, [`StoredEnrolment::LEN`] bytes,
+    /// once `Pair` or a kept enrolment's `Hello` has succeeded. It holds the
+    /// issued key and never the printed secret (P-222); clear every copy once
+    /// storage has it.
+    #[must_use]
+    pub fn kept_enrolment(&self) -> Option<Zeroizing<[u8; StoredEnrolment::LEN]>> {
+        let Some(Credential::Enrolled(stored)) = &self.credential else {
+            return None;
+        };
+        let mut bytes = Zeroizing::new([0u8; StoredEnrolment::LEN]);
+        stored.encode(&mut bytes);
+        Some(bytes)
     }
 
     /// Forget the connection and any session, keeping the enrolment (or the
@@ -300,6 +387,7 @@ impl Engine {
     /// step is `Discover`.
     pub fn reset_link(&mut self) {
         self.stage = Stage::Idle;
+        self.enrolment = None;
     }
 
     /// `Discover 0x00`. Valid on a fresh link, or before `Pair` or `Hello` to
@@ -320,6 +408,7 @@ impl Engine {
             | Stage::Failed => return Err(SetupFailure::ProtocolError),
         };
         let req = self.allocate()?;
+        self.enrolment = None;
         let header = Header {
             kind: MessageType::Discover,
             session: handle,
@@ -365,14 +454,47 @@ impl Engine {
             challenge: found.challenge,
             epoch: found.epoch,
         };
-        self.stage = if self.enrolment.is_some() {
-            Stage::Enrolled(link)
-        } else {
-            Stage::Discovered(link)
+        // P-222: a kept key is used only on the controller and epoch it was
+        // issued for, checked again on every `Discover`.
+        let (credential, restored) = match self.credential.take() {
+            Some(Credential::Code(code)) => (Some(Credential::Code(code)), None),
+            Some(Credential::Kept { stored, code }) => match stored.restore(&found) {
+                Ok(enrolment) => (Some(Credential::Kept { stored, code }), Some(enrolment)),
+                // Kept for another epoch: pair again with the code in hand.
+                Err(_) => (Some(Credential::Code(code)), None),
+            },
+            Some(Credential::Enrolled(stored)) => match stored.restore(&found) {
+                Ok(enrolment) => (Some(Credential::Enrolled(stored)), Some(enrolment)),
+                // Reset since this session paired: the key is dead, and the
+                // printed secret went at `Pair`.
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+        self.credential = credential;
+        let Some(credential) = &self.credential else {
+            return Err(SetupFailure::ControllerReset);
+        };
+        self.stage = match (credential, restored) {
+            (Credential::Kept { .. } | Credential::Enrolled(_), Some(enrolment)) => {
+                self.enrolment = Some(enrolment);
+                Stage::Enrolled(link)
+            }
+            (Credential::Code(_), _)
+            | (Credential::Kept { .. } | Credential::Enrolled(_), None) => Stage::Discovered(link),
         };
         Ok(Some(ControllerSummary {
             device_id: found_id.to_string(),
+            enrolled: self.enrolment.is_some(),
         }))
+    }
+
+    /// The setup code, while it is still held for `Pair`.
+    fn code(&self) -> Option<&SetupCode> {
+        match &self.credential {
+            Some(Credential::Code(code)) => Some(code),
+            Some(Credential::Kept { .. } | Credential::Enrolled(_)) | None => None,
+        }
     }
 
     /// `Pair 0x0B`, proving knowledge of the printed secret under `pair_key`.
@@ -380,16 +502,16 @@ impl Engine {
         let Stage::Discovered(link) = self.stage else {
             return Err(SetupFailure::ProtocolError);
         };
-        let Some(code) = &self.code else {
+        let Some(code) = self.code() else {
             return Err(SetupFailure::ProtocolError);
         };
+        let pair_key = code.device_secret().pair_key();
         let client_nonce = self.nonces.nonce().ok_or(SetupFailure::ProtocolError)?;
         let attempt = Attempt {
             device_id: *self.device_id.as_bytes(),
             challenge: link.challenge,
             client_nonce,
         };
-        let pair_key = code.device_secret().pair_key();
         let req = self.allocate()?;
         let header = Header {
             kind: MessageType::Pair,
@@ -427,7 +549,7 @@ impl Engine {
         link: Link,
         attempt: &Attempt,
     ) -> Result<Option<PairedClient>, SetupFailure> {
-        let Some(code) = &self.code else {
+        let Some(code) = self.code() else {
             return Err(SetupFailure::ProtocolError);
         };
         let Some(envelope) = inbound(frame, req, None, MessageType::PairResponse)? else {
@@ -452,9 +574,10 @@ impl Engine {
             Outcome::BadProof => return self.refuse_pair(next, SetupFailure::WrongProof),
             Outcome::TableFull => return self.refuse_pair(next, SetupFailure::TableFull),
         };
-        self.enrolment = Some(secret.enrolment(link.epoch, client_id));
-        // Enrolled: the printed secret is no longer needed and goes now.
-        self.code = None;
+        let enrolment = secret.enrolment(link.epoch, client_id);
+        // Enrolled: the printed secret is no longer needed and goes now (P-222).
+        self.credential = Some(Credential::Enrolled(enrolment.stored()));
+        self.enrolment = Some(enrolment);
         self.stage = Stage::Enrolled(next);
         Ok(Some(PairedClient {
             client_id: client_id.get(),
@@ -508,7 +631,35 @@ impl Engine {
         let Stage::Greeting { req, handshake } = self.stage else {
             return Err(SetupFailure::ProtocolError);
         };
-        let judged = self.judge_hello(frame, req, &handshake);
+        let judged = match self.judge_hello(frame, req, &handshake) {
+            // `inbound` answers `ConnectionDropped` only for an `Error`. The
+            // controller holds no row for a kept key it will not take, so a
+            // kept enrolment it refuses gives way to the setup code. A bare
+            // `Error` is a hint (P-055), so the code pairs again only after a
+            // person opens the pairing window, and storage keeps the old entry
+            // until that `Pair` succeeds.
+            Err(SetupFailure::ConnectionDropped) => match self.credential.take() {
+                Some(Credential::Kept { code, .. }) => {
+                    self.credential = Some(Credential::Code(code));
+                    self.enrolment = None;
+                    Err(SetupFailure::EnrolmentRefused)
+                }
+                other @ (Some(Credential::Code(_) | Credential::Enrolled(_)) | None) => {
+                    self.credential = other;
+                    Err(SetupFailure::ConnectionDropped)
+                }
+            },
+            Ok(Some(info)) => {
+                // Proven: the kept enrolment is now this session's, and the
+                // setup code goes as it would after `Pair` (P-222).
+                self.credential = match self.credential.take() {
+                    Some(Credential::Kept { stored, .. }) => Some(Credential::Enrolled(stored)),
+                    other @ (Some(Credential::Code(_) | Credential::Enrolled(_)) | None) => other,
+                };
+                Ok(Some(info))
+            }
+            other => other,
+        };
         self.settle(judged)
     }
 

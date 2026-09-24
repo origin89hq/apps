@@ -5,7 +5,9 @@ is a native iOS app in SwiftUI. It sets up a controller: scan or paste its setup
 code, connect over Bluetooth, pair inside the panel's pairing window, read and
 write the network section, and optionally set the controller's clock. On a
 controller that sets `Hello` capability bit 8 it also lists the networks the
-controller's radio hears and reports whether the controller joined.
+controller's radio hears and reports whether the controller joined. The phone
+keeps its enrolment in the Keychain, so scanning the same controller's code
+after a relaunch reconnects without the pairing window.
 
 ## iOS development
 
