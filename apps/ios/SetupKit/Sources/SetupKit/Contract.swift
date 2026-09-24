@@ -2,6 +2,8 @@ import Foundation
 
 public enum TransportError: Error, Sendable, Equatable {
   case unreachable, dropped, timedOut
+  /// A peer was found, but its link was not ready before the open timeout.
+  case notReady
   /// The app may not reach the local network (a WebSocket only).
   case localNetworkDenied
 }
@@ -27,8 +29,10 @@ public enum SetupFailure: Error, Sendable, Equatable {
   case enrolmentRefused
   /// The controller was factory reset after this session paired.
   case controllerReset
-  case bluetoothUnavailable, connectionDropped, timedOut, protocolError, timeRejected,
-    timeNeedsButton
+  case bluetoothUnavailable
+  /// A controller was found, but its Bluetooth link was not ready in time.
+  case linkNotReady
+  case connectionDropped, timedOut, protocolError, timeRejected, timeNeedsButton
 
   public var message: String {
     switch self {
@@ -49,6 +53,8 @@ public enum SetupFailure: Error, Sendable, Equatable {
       "The controller was reset since this phone paired. Scan its setup code to pair again."
     case .bluetoothUnavailable:
       "Bluetooth is unavailable or the controller was not found. Check Bluetooth permission and move closer."
+    case .linkNotReady:
+      "A controller was found, but its Bluetooth connection did not become ready in time. Move closer and try again."
     case .connectionDropped: "The connection to the controller was lost. Reconnect to it."
     case .timedOut: "The controller did not respond in time. Try connecting again."
     case .protocolError:

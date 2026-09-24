@@ -92,7 +92,9 @@ struct SetupView: View {
         "The controller no longer accepts this phone's pairing. Scan its setup code to pair again."
     }
     // Wi-Fi was tried first and failed too: say why.
-    if failure == .bluetoothUnavailable, let wifi = flow.wifiUnavailable {
+    if failure == .bluetoothUnavailable || failure == .linkNotReady,
+      let wifi = flow.wifiUnavailable
+    {
       return "\(failure.message) \(wifi.message)"
     }
     if failure == .protocolError, failedDuring == .pairing {

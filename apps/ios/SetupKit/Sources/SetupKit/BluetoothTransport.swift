@@ -31,7 +31,8 @@ enum BluetoothEvent {
 /// Why the transport ended a connection, for the log.
 enum TransportEnd: String {
   case closedByFlow = "closed by the setup flow"
-  case openTimedOut = "no subscribed peripheral before the open timeout"
+  case openTimedOut = "no peripheral found before the open timeout"
+  case notReady = "a peripheral was found but not subscribed before the open timeout"
   case readTimedOut = "no reply before the read timeout"
   case writeTimedOut = "the peripheral took no write before the write timeout"
   case cancelled = "the request waiting on it was cancelled"
@@ -85,7 +86,7 @@ enum TransportEnd: String {
       try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { continuation in
           opening = continuation
-          openTimer = timer(error: .unreachable, .openTimedOut)
+          openTimer = openTimeout()
           driver.start(identifiers: identifiers, excluding: excluded)
         }
       } onCancel: {
@@ -158,6 +159,19 @@ enum TransportEnd: String {
       // An event may have cancelled this timer after the sleep ended.
       guard !Task.isCancelled else { return }
       self?.terminate(error, end)
+    }
+  }
+  /// Ends an open that has no subscribed peripheral in time: none found is
+  /// `unreachable`, one found whose link never became ready is `notReady`.
+  private func openTimeout() -> Task<Void, Never> {
+    Task { [weak self, timeout] in
+      do { try await Task.sleep(for: timeout) } catch { return }
+      guard !Task.isCancelled, let self else { return }
+      if driver.peer == nil {
+        terminate(.unreachable, .openTimedOut)
+      } else {
+        terminate(.notReady, .notReady)
+      }
     }
   }
   private func handle(_ event: BluetoothEvent) {
