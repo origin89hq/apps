@@ -255,6 +255,8 @@ actor RustControllerClient: ControllerClient {
     case .unreachable: .bluetoothUnavailable
     case .dropped: .connectionDropped
     case .timedOut: .timedOut
+    // Reported by a WebSocket open only, never by a send or receive.
+    case .localNetworkDenied: .connectionDropped
     }
   }
 

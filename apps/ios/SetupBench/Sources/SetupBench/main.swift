@@ -23,11 +23,15 @@ let usage = """
     --device ID            The controller's device_id; defaults to the last one paired.
     --code-env NAME        Read the setup code from $NAME instead.
     --passphrase-env NAME  Read the passphrase from $NAME instead.
+    --bluetooth-only       Never use Wi-Fi. Otherwise a write that joins moves the session
+                           to the controller's address, and later commands try the kept
+                           address first; this Mac must be on the controller's network.
     --no-log               Do not stream the flow's log on stderr.
 
   The setup code and the passphrase are never taken as arguments. Without the
   environment variable, each is read from a file in ~/Library/Application Support/
-  Origin89 Bench: setup-code and wifi-passphrase. Enrolments are kept there too.
+  Origin89 Bench: setup-code and wifi-passphrase. Enrolments and controller
+  addresses are kept there too.
   Keep that directory readable only by you.
   """
 
@@ -81,6 +85,28 @@ struct FileEnrolmentStore: EnrolmentStore {
   }
 }
 
+/// Controller addresses as files, one per `device_id`, next to the enrolments.
+struct FileControllerAddresses: ControllerAddressStore {
+  private func file(_ deviceID: String) -> URL? {
+    guard isDeviceID(deviceID) else { return nil }
+    return BenchFiles.directory.appending(path: "addresses").appending(path: deviceID)
+  }
+  func load(deviceID: String) -> String? {
+    guard let url = file(deviceID), let data = try? Data(contentsOf: url) else { return nil }
+    return String(data: data, encoding: .utf8)
+  }
+  func save(_ address: String?, deviceID: String) {
+    guard let url = file(deviceID) else { return }
+    guard let address else {
+      try? FileManager.default.removeItem(at: url)
+      return
+    }
+    try? FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? Data(address.utf8).write(to: url, options: [.atomic])
+  }
+}
+
 /// The controller to continue with, as a relaunch of the app would find it.
 final class BenchLastController: LastControllerStore, @unchecked Sendable {
   private let lock = NSLock()
@@ -105,7 +131,7 @@ struct Options {
     guard let command = arguments.first else { throw BenchError(usage) }
     self.command = command
     var rest = arguments.dropFirst()
-    let bare: Set<String> = ["window-open", "no-log"]
+    let bare: Set<String> = ["window-open", "no-log", "bluetooth-only"]
     while let argument = rest.popFirst() {
       guard argument.hasPrefix("--") else { throw BenchError("unexpected \(argument)\n\n\(usage)") }
       let name = String(argument.dropFirst(2))
@@ -168,26 +194,38 @@ func label(_ state: SetupFlow.State) -> String {
   let store = FileEnrolmentStore()
 
   func flow(resuming deviceID: String?) -> SetupFlow {
-    SetupFlow(
+    var webSocket: (@MainActor @Sendable (String) -> (any FrameTransport)?)?
+    if !options.has("bluetooth-only") { webSocket = { WebSocketTransport.km43(address: $0) } }
+    return SetupFlow(
       factory: RustControllerClientFactory(
         label: "Origin89 bench \(Host.current().localizedName ?? "Mac")"),
       store: store,
       transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
-      lastController: BenchLastController(deviceID))
+      lastController: BenchLastController(deviceID),
+      webSocketFactory: webSocket,
+      addresses: FileControllerAddresses())
   }
 
   /// Print state, join and scan changes until `done` holds or `limit` passes.
   func watch(_ flow: SetupFlow, for limit: Duration, until done: (SetupFlow) -> Bool) async {
     let deadline = ContinuousClock.now + limit
-    var seen = (label(flow.state), "\(flow.join)", flow.isScanning)
+    var seen = (label(flow.state), "\(flow.join)", flow.isScanning, link(flow))
     while !done(flow), ContinuousClock.now < deadline {
       try? await Task.sleep(for: .milliseconds(50))
-      let now = (label(flow.state), "\(flow.join)", flow.isScanning)
+      let now = (label(flow.state), "\(flow.join)", flow.isScanning, link(flow))
       if now.0 != seen.0 { timeline.say("state \(now.0)") }
       if now.1 != seen.1 { timeline.say("join \(now.1)") }
       if now.2 != seen.2 { timeline.say(now.2 ? "scan running" : "scan stopped") }
+      if now.3 != seen.3 { timeline.say("link \(now.3)") }
       seen = now
     }
+  }
+
+  func link(_ flow: SetupFlow) -> String {
+    let link = flow.link.map { "\($0)" } ?? "closed"
+    if flow.isSwitchingToWiFi { return "\(link), opening Wi-Fi" }
+    guard let unavailable = flow.wifiUnavailable else { return link }
+    return "\(link); Wi-Fi unavailable (\(unavailable)): \(unavailable.message)"
   }
 
   func run() async throws {
@@ -246,7 +284,8 @@ func label(_ state: SetupFlow.State) -> String {
     guard case .editingNetwork(let settings) = flow.state else {
       throw BenchError("stopped: \(label(flow.state))")
     }
-    timeline.say("state \(label(flow.state)), reports Wi-Fi \(flow.reportsWiFi)")
+    timeline.say(
+      "state \(label(flow.state)), reports Wi-Fi \(flow.reportsWiFi), link \(link(flow))")
     return (flow, settings)
   }
 
@@ -300,11 +339,15 @@ func label(_ state: SetupFlow.State) -> String {
     await watch(flow, for: watchFor) { flow in
       if case .failed = flow.state { return true }
       switch flow.join {
-      case .joined, .failed, .noAnswer, .connectionLost: return true
+      // A join is followed by the switch to Wi-Fi.
+      case .joined:
+        return options.has("bluetooth-only")
+          || (!flow.isSwitchingToWiFi && (flow.link != .bluetooth || flow.wifiUnavailable != nil))
+      case .failed, .noAnswer, .connectionLost: return true
       case .idle, .waiting: return false
       }
     }
-    timeline.say("final state \(label(flow.state)), join \(flow.join)")
+    timeline.say("final state \(label(flow.state)), join \(flow.join), link \(link(flow))")
     await flow.reset()
   }
 

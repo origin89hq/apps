@@ -69,6 +69,7 @@ struct NetworkView: View {
           if let scanNote { Text(scanNote) }
         }
       }
+      LinkSection(flow: flow)
       if let held = settings.ssid {
         Section {
           Button("Forget this network", role: .destructive) { destination = .forget }

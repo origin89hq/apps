@@ -1,8 +1,9 @@
 //! Controller setup for the Origin89 apps: the P-049 setup code, a sans-IO
 //! KM43 client that runs `Discover`, `Pair`, `Hello`, `GetConfig` and
 //! `SetConfig` of the network section, `WifiScan` and `WifiStatus` where the
-//! controller answers them, and an optional signed `Time`, and the BLE GATT
-//! fragmentation that carries its messages.
+//! controller answers them, and an optional signed `Time`, the BLE GATT
+//! fragmentation that carries its messages, and the WebSocket URL that
+//! carries them on the site network.
 //!
 //! The wire format is the `km43` crate, the one the controller itself speaks.
 //! Keys and session state stay in Rust; Swift sends and receives opaque frames
@@ -28,6 +29,7 @@ mod ble;
 mod code;
 mod engine;
 mod note;
+mod websocket;
 mod wifi;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -38,6 +40,7 @@ pub use ble::*;
 pub use code::*;
 pub use engine::*;
 pub use note::*;
+pub use websocket::*;
 pub use wifi::*;
 
 uniffi::setup_scaffolding!();

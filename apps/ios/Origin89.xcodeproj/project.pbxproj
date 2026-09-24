@@ -176,6 +176,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Origin89 connects to your controller over your Wi-Fi network once the controller has joined it.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Origin89 uses your location only to read the name of the Wi-Fi network this phone is on, so you can pick it for your controller.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -201,6 +202,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Origin89 connects to your controller over your Wi-Fi network once the controller has joined it.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Origin89 uses your location only to read the name of the Wi-Fi network this phone is on, so you can pick it for your controller.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

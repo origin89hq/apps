@@ -8,7 +8,9 @@ struct Origin89App: App {
     factory: RustControllerClientFactory(label: DeviceLabel.current),
     store: KeychainEnrolmentStore(),
     transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
-    lastController: DefaultsLastController())
+    lastController: DefaultsLastController(),
+    webSocketFactory: { WebSocketTransport.km43(address: $0) },
+    addresses: DefaultsControllerAddresses())
 
   var body: some Scene {
     WindowGroup {
