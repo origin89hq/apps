@@ -70,7 +70,13 @@ import Observation
     case pair, readNetwork
     case written(UInt32)
   }
-  public private(set) var state: State = .enterCode
+  public private(set) var state: State = .enterCode {
+    didSet {
+      guard state != oldValue else { return }
+      SetupLog.flow.info(
+        "\(oldValue.logLabel, privacy: .public) -> \(self.state.logLabel, privacy: .public)")
+    }
+  }
   public private(set) var controller: ControllerSummary?
   public private(set) var network: NetworkSettings?
   /// Whether the controller answers Wi-Fi scan and status reads (P-216).
@@ -139,6 +145,9 @@ import Observation
     }
     let greets = await client.isEnrolled()
     guard generation == operation else { return }
+    SetupLog.flow.info(
+      "connecting: enrolled \(greets, privacy: .public), resume \(String(describing: self.resume), privacy: .public)"
+    )
     await closeTransport()
     await (transport as? any PeerExcludingTransport)?.clearExcludedPeers()
     transportActive = true
@@ -222,6 +231,7 @@ import Observation
       // A kept enrolment for another epoch (P-222): pair on this connection.
       guard await client.isEnrolled() else {
         guard generation == operation else { return }
+        SetupLog.flow.notice("the kept enrolment is for another epoch: pairing again")
         keptEnrolmentLost = true
         state = .openWindow
         return
@@ -261,6 +271,8 @@ import Observation
         guard error == .controllerMismatch, generation == operation,
           let transport = transport as? any PeerExcludingTransport
         else { throw error }
+        SetupLog.flow.notice(
+          "another controller answered Discover: skipping it and connecting again")
         await transport.excludeConnectedPeer()
         await client.close()
         await closeTransport()
@@ -292,6 +304,9 @@ import Observation
     do {
       let settings = try await client.readNetwork()
       guard generation == operation else { return }
+      SetupLog.flow.info(
+        "network section version \(settings.version, privacy: .public), network held \(settings.ssid != nil, privacy: .public), country held \(settings.country != nil, privacy: .public)"
+      )
       network = settings
       state = .editingNetwork(settings)
     } catch {
@@ -372,8 +387,13 @@ import Observation
     let deadline = clock.now + Self.scanLimit
     do {
       while true {
-        let answer = try await client.scanWiFi(refresh: refresh)
+        let answer = try await Self.uninterrupted { [refresh] () async throws(SetupFailure) in
+          try await client.scanWiFi(refresh: refresh)
+        }
         guard generation == operation else { return }
+        SetupLog.flow.info(
+          "scan \(String(describing: answer.progress), privacy: .public), refused \(String(describing: answer.refused), privacy: .public), \(answer.networks?.count ?? 0, privacy: .public) networks listed"
+        )
         scan = answer
         guard answer.progress == .running, !Task.isCancelled, clock.now < deadline else { return }
         refresh = false
@@ -402,8 +422,13 @@ import Observation
     let deadline = clock.now + Self.joinLimit
     do {
       while true {
-        let status = try await client.wifiStatus()
+        let status = try await Self.uninterrupted { () async throws(SetupFailure) in
+          try await client.wifiStatus()
+        }
         guard generation == operation else { return }
+        SetupLog.flow.info(
+          "Wi-Fi status: section \(status.section, privacy: .public), radio on version \(status.radio.map { String($0.version) } ?? "none", privacy: .public)"
+        )
         switch status.state(for: version) {
         case .joined(let address):
           join = .joined(address: address)
@@ -456,9 +481,27 @@ import Observation
     }
   }
 
+  /// A scan or status read run to its answer even when the background task
+  /// is cancelled. The transport ends the connection when a read is
+  /// cancelled, so a stop waits for the request in flight and the loop ends
+  /// after it; the next step then has the connection to itself.
+  private static func uninterrupted<Value: Sendable>(
+    _ request: @escaping @Sendable () async throws(SetupFailure) -> Value
+  ) async throws(SetupFailure) -> Value {
+    let result = await Task { () async -> Result<Value, SetupFailure> in
+      do throws(SetupFailure) {
+        return .success(try await request())
+      } catch {
+        return .failure(error)
+      }
+    }.value
+    return try result.get()
+  }
+
   /// Stop the scan or join watch and wait for its request to finish.
   private func stopBackground() async {
     guard let task = backgroundTask else { return }
+    SetupLog.flow.debug("stopping the Wi-Fi scan or join watch after its request in flight")
     task.cancel()
     await task.value
     backgroundTask = nil
@@ -479,6 +522,7 @@ import Observation
   /// network stays written; anything in progress resumes through retry.
   public func suspend() async {
     guard transportActive else { return }
+    SetupLog.flow.notice("the app left the foreground: closing the connection")
     await close()
     switch state {
     case .written, .settingTime:
@@ -493,6 +537,7 @@ import Observation
   }
   public func retry() async {
     guard case .failed(_, let target) = state else { return }
+    SetupLog.flow.info("retrying from \(String(describing: target), privacy: .public)")
     switch target {
     case .enterCode: state = .enterCode
     case .connecting, .openWindow:
@@ -563,6 +608,9 @@ import Observation
     case .bluetoothUnavailable, .connectionDropped, .timedOut, .protocolError:
       target = .connecting
     }
+    SetupLog.flow.error(
+      "stopped: \(String(describing: failure), privacy: .public); the connection is \(keepConnection ? "kept" : "closed", privacy: .public)"
+    )
     if !keepConnection { await close() }
     state = .failed(failure, target)
     if target == .enterCode { client = nil }
@@ -580,6 +628,19 @@ import Observation
     case .unreachable: .bluetoothUnavailable
     case .dropped: .connectionDropped
     case .timedOut: .timedOut
+    }
+  }
+}
+
+extension SetupFlow.State {
+  /// The state for a log, without the network's SSID, country or hostname.
+  var logLabel: String {
+    switch self {
+    case .editingNetwork(let settings): "editingNetwork(version \(settings.version))"
+    case .failed(let failure, let target): "failed(\(failure), retry \(target))"
+    case .enterCode, .connecting, .openWindow, .discovering, .pairing, .greeting,
+      .readingNetwork, .writingNetwork, .written, .settingTime, .finished:
+      "\(self)"
     }
   }
 }

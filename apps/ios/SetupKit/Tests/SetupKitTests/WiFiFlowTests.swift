@@ -24,15 +24,31 @@ private actor WiFiClient: ControllerClient {
   var statuses: [WiFiStatus]
   var scanFailure: SetupFailure?
   private(set) var calls: [Call] = []
-  let settings = NetworkSettings(
-    version: 7, ssid: "home", passphraseSet: true, country: "CA", hostname: "unit")
+  /// The next scan or status read waits for `release()`, like a reply still
+  /// on its way.
+  var holdScan = false
+  var holdStatus = false
+  private var held: CheckedContinuation<Void, Never>?
+  var isHolding: Bool { held != nil }
+  let settings: NetworkSettings
 
-  init(reportsWiFi: Bool = true, scans: [NetworkScan] = [], statuses: [WiFiStatus] = []) {
+  init(
+    reportsWiFi: Bool = true, scans: [NetworkScan] = [], statuses: [WiFiStatus] = [],
+    settings: NetworkSettings = NetworkSettings(
+      version: 7, ssid: "home", passphraseSet: true, country: "CA", hostname: "unit")
+  ) {
     self.reportsWiFi = reportsWiFi
     self.scans = scans
     self.statuses = statuses
+    self.settings = settings
   }
   func failScans(with failure: SetupFailure) { scanFailure = failure }
+  func holdNextScan() { holdScan = true }
+  func holdNextStatus() { holdStatus = true }
+  func release() {
+    held?.resume()
+    held = nil
+  }
   func discover() async throws(SetupFailure) -> ControllerSummary {
     calls.append(.discover)
     return ControllerSummary(deviceID: "abcd")
@@ -57,16 +73,30 @@ private actor WiFiClient: ControllerClient {
     -> UInt32
   {
     calls.append(.write)
+    written = expectedVersion
     return expectedVersion + 1
   }
+  /// The `expected_version` of the last write.
+  private(set) var written: UInt32?
   func setTime(_ date: Date) async throws(SetupFailure) { calls.append(.time) }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
     calls.append(.scan(refresh: refresh))
+    if holdScan {
+      holdScan = false
+      await withCheckedContinuation { held = $0 }
+    }
+    // A cancelled read ends the connection, as `BluetoothTransport` does.
+    if Task.isCancelled { throw .connectionDropped }
     if let scanFailure { throw scanFailure }
     return scans.count > 1 ? scans.removeFirst() : scans[0]
   }
   func wifiStatus() async throws(SetupFailure) -> WiFiStatus {
     calls.append(.status)
+    if holdStatus {
+      holdStatus = false
+      await withCheckedContinuation { held = $0 }
+    }
+    if Task.isCancelled { throw .connectionDropped }
     return statuses.count > 1 ? statuses.removeFirst() : statuses[0]
   }
   func close() async {}
@@ -192,6 +222,106 @@ private let complete = NetworkScan(progress: .complete, networks: [cabin], unlis
   await settle { if case .failed = flow.state { true } else { false } }
   #expect(flow.state == .failed(.connectionDropped, .connecting))
   #expect(await transport.closes == 1)
+}
+
+@Test @MainActor func aWriteLetsTheScanRequestInFlightFinish() async throws {
+  let client = WiFiClient(
+    scans: [running],
+    statuses: [WiFiStatus(section: 8, radio: (version: 8, state: .joined(address: "10.0.0.2")))])
+  await client.holdNextScan()
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  flow.scanNetworks()
+  for _ in 0..<10_000 where await !client.isHolding { await Task.yield() }
+  #expect(await client.isHolding)
+  let write = Task {
+    await flow.writeNetwork(
+      NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  }
+  // The write waits for the scan's answer instead of cancelling its read.
+  for _ in 0..<100 { await Task.yield() }
+  #expect(await client.calls.last == .scan(refresh: true))
+  await client.release()
+  await write.value
+  #expect(flow.state == .written(8))
+  #expect(await transport.closes == 0)
+  // One scan, answered, then the write; the join watch reads status after it.
+  #expect(
+    await client.calls.filter { $0 != .status }.suffix(2) == [.scan(refresh: true), .write])
+}
+
+@Test @MainActor func settingTheTimeLetsTheStatusReadInFlightFinish() async throws {
+  let client = WiFiClient(statuses: [WiFiStatus(section: 8, radio: (version: 8, state: .joining))])
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  await client.holdNextStatus()
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  for _ in 0..<10_000 where await !client.isHolding { await Task.yield() }
+  #expect(await client.isHolding)
+  let time = Task { await flow.setTime(Date(timeIntervalSince1970: 1_700_000_000)) }
+  for _ in 0..<100 { await Task.yield() }
+  #expect(await client.calls.last == .status)
+  await client.release()
+  await time.value
+  #expect(flow.state == .finished(version: 8, timeSet: true))
+  #expect(await client.calls.suffix(2) == [.status, .time])
+  // Only the close that finishes setup.
+  #expect(await transport.closes == 1)
+}
+
+/// A network section the controller never wrote, or holds damaged (P-108).
+private let unwritten = NetworkSettings(
+  version: 0, ssid: nil, passphraseSet: false, country: nil, hostname: nil)
+/// P-218: with no network there is no country, so the radio cannot scan.
+private let radioOff = NetworkScan(progress: .none, refused: .radioOff, networks: nil)
+private let joinedFirst = WiFiStatus(
+  section: 1, radio: (version: 1, state: .joined(address: "10.0.0.2")))
+
+@Test @MainActor func anUnwrittenSectionIsWrittenAgainstVersion0() async throws {
+  let client = WiFiClient(scans: [radioOff], statuses: [joinedFirst], settings: unwritten)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  #expect(flow.network == unwritten)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  #expect(await client.written == 0)
+  #expect(flow.state == .written(1))
+  #expect(await transport.closes == 0)
+}
+
+@Test @MainActor func anUnwrittenSectionCannotKeepAPassphrase() async throws {
+  let client = WiFiClient(settings: unwritten)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, _) = try await editing(client, clock)
+  // No SSID and no passphrase are held, so a write without one is refused here.
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: nil, country: "CA", hostname: "unit"))
+  #expect(flow.state == .failed(.invalidConfig, .editingNetwork))
+  #expect(await !client.calls.contains(.write))
+  await flow.retry()
+  #expect(flow.state == .editingNetwork(unwritten))
+}
+
+@Test @MainActor func aRadioOffRefusalLeavesTheNetworkToBeTyped() async throws {
+  let client = WiFiClient(scans: [radioOff], statuses: [joinedFirst], settings: unwritten)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  flow.scanNetworks()
+  await settle { !flow.isScanning }
+  // One refused refresh, no polling, and the flow stays on the network.
+  #expect(flow.scan == radioOff)
+  #expect(await client.calls.last == .scan(refresh: true))
+  #expect(flow.state == .editingNetwork(unwritten))
+  #expect(await transport.closes == 0)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "typed", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  #expect(flow.state == .written(1))
 }
 
 @Test @MainActor func aWriteWaitsForTheScanAndThenWatchesTheJoin() async throws {

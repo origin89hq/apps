@@ -966,6 +966,25 @@ impl Engine {
         Ok((frame, req, counter))
     }
 
+    /// The key of the session open on this link, if one is.
+    pub(crate) fn session_key(&self) -> Option<&SessionKey> {
+        match &self.stage {
+            Stage::Ready(session)
+            | Stage::Reading { session, .. }
+            | Stage::Writing { session, .. }
+            | Stage::SettingTime { session, .. }
+            | Stage::Scanning { session, .. }
+            | Stage::CheckingWifi { session, .. } => Some(&session.key),
+            Stage::Idle
+            | Stage::Discovering { .. }
+            | Stage::Discovered(_)
+            | Stage::Pairing { .. }
+            | Stage::Enrolled(_)
+            | Stage::Greeting { .. }
+            | Stage::Failed => None,
+        }
+    }
+
     /// The ready session, only when its controller reports Wi-Fi (P-216).
     fn take_reporting(&mut self) -> Result<Session, SetupFailure> {
         let session = self.take_ready()?;

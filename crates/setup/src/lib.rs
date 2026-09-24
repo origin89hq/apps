@@ -27,6 +27,7 @@
 mod ble;
 mod code;
 mod engine;
+mod note;
 mod wifi;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -36,6 +37,7 @@ use zeroize::Zeroize as _;
 pub use ble::*;
 pub use code::*;
 pub use engine::*;
+pub use note::*;
 pub use wifi::*;
 
 uniffi::setup_scaffolding!();
@@ -185,6 +187,12 @@ impl SetupSession {
     /// after the write, in milliseconds since the Unix epoch.
     pub fn set_time_reply(&self, frame: &[u8]) -> Result<Option<u64>, SetupFailure> {
         self.engine().set_time_reply(frame)
+    }
+
+    /// Describe a frame sent or received, for a log: its type, `req_id` and,
+    /// for an `Error`, the code. Nothing else from the frame is included.
+    pub fn frame_note(&self, frame: &[u8]) -> Option<FrameNote> {
+        self.engine().frame_note(frame)
     }
 }
 
