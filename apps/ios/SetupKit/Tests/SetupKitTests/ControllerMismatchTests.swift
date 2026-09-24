@@ -97,3 +97,33 @@ private struct PeerFactory: ControllerClientFactory {
   #expect(driver.peer == wrong)
   #expect(driver.mostConnections == 1)
 }
+
+/// The pairing window closes a few milliseconds in, while the flow is
+/// reconnecting past a wrong controller (the reopen waits for the 20 ms open
+/// timeout).
+@MainActor private struct ShortWindowClock: SetupClock {
+  var now: Duration { .zero }
+  func sleep(until deadline: Duration) async throws { try await Task.sleep(for: .milliseconds(5)) }
+}
+
+@Test @MainActor func windowClosingDuringMismatchReconnectLetsRetryConnect() async throws {
+  let wrong = UUID()
+  let driver = FakeDriver()
+  driver.peripherals = [wrong]
+  let transport = BluetoothTransport(
+    identifiers: BluetoothIdentifiers(service: "1234", rx: "1235", tx: "1236"),
+    codec: FakeCodec(), driver: driver, timeout: .milliseconds(20))
+  let client = PeerClient(driver: driver, right: nil)
+  let flow = SetupFlow(
+    factory: PeerFactory(client: client), transportFactory: { transport },
+    clock: ShortWindowClock())
+  try flow.submitCode("km43:1:code")
+  await flow.connect()
+  await flow.confirmWindowOpened()
+  #expect(flow.state == .failed(.windowClosed, .openWindow))
+  #expect(driver.connections == 0)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  #expect(driver.connections == 1)
+  #expect(driver.mostConnections == 1)
+}

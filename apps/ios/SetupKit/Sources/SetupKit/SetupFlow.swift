@@ -123,10 +123,8 @@ import Observation
     deadlineTask = Task { [weak self, clock] in
       do { try await clock.sleep(until: deadline) } catch { return }
       guard !Task.isCancelled, let self, self.generation == operation else { return }
-      self.generation += 1
       self.state = .failed(.windowClosed, .openWindow)
-      await client.close()
-      await self.closeTransport()
+      await self.close()
     }
     do {
       state = .discovering
@@ -137,11 +135,8 @@ import Observation
       try await client.pair()
       guard generation == operation else { return }
       guard clock.now < deadline else {
-        deadlineTask?.cancel()
-        generation += 1
         state = .failed(.windowClosed, .openWindow)
-        await client.close()
-        await closeTransport()
+        await close()
         return
       }
       deadlineTask?.cancel()
@@ -199,8 +194,7 @@ import Observation
         await client.close()
         await closeTransport()
         guard generation == operation else { throw error }
-        let step = state
-        state = .connecting
+        // The state stays on discovering, so the window countdown keeps running.
         isConnecting = true
         transportActive = true
         do {
@@ -216,7 +210,6 @@ import Observation
           throw .connectionDropped
         }
         isConnecting = false
-        state = step
       }
     }
   }
