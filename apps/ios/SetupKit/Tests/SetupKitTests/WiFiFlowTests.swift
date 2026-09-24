@@ -107,6 +107,9 @@ private struct Factory: ControllerClientFactory {
   func client(setupCode: String, transport: any FrameTransport) throws(SetupCodeError)
     -> any ControllerClient
   { client }
+  func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? { nil }
 }
 
 /// Poll sleeps pass at once and move the clock; the 120-second pairing window

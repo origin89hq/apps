@@ -90,6 +90,17 @@ impl From<[u8; DEVICE_ID_BYTES]> for ControllerId {
     }
 }
 
+/// 32 lowercase hexadecimal characters, as [`fmt::Display`] writes them.
+impl FromStr for ControllerId {
+    type Err = SetupCodeError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let mut bytes = [0u8; DEVICE_ID_BYTES];
+        decode_hex(Some(text.as_bytes()), &mut bytes, CodeField::DeviceId)?;
+        Ok(Self(bytes))
+    }
+}
+
 /// 32 lowercase hexadecimal characters, the form P-049 prints.
 impl fmt::Display for ControllerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

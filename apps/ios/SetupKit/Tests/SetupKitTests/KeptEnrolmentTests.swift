@@ -36,7 +36,7 @@ private actor Transport: FrameTransport {
 
 /// Holds a credential the way the Rust engine does: the setup code, a kept
 /// enrolment not yet proven, or an enrolment.
-private actor KeptClient: ControllerClient {
+actor KeptClient: ControllerClient {
   enum Credential: Equatable {
     case code
     case kept(Data)
@@ -50,6 +50,11 @@ private actor KeptClient: ControllerClient {
   private(set) var credential = Credential.code
   private(set) var calls: [String] = []
   init(_ controller: Controller) { self.controller = controller }
+  /// A client resumed from `kept` with no setup code, as a relaunch builds it.
+  init(_ controller: Controller, resuming kept: Data) {
+    self.controller = controller
+    credential = .kept(kept)
+  }
 
   func restore(from store: any EnrolmentStore) async {
     if let kept = store.load(deviceID: Self.deviceID) { credential = .kept(kept) }
@@ -94,9 +99,25 @@ private actor KeptClient: ControllerClient {
 }
 private struct Factory: ControllerClientFactory {
   let client: KeptClient
+  /// Built by a relaunch when the store keeps an enrolment for its controller.
+  var resumed: KeptClient?
   func client(setupCode: String, transport: any FrameTransport) throws(SetupCodeError)
     -> any ControllerClient
   { client }
+  func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? {
+    guard store.load(deviceID: deviceID) != nil else { return nil }
+    return resumed
+  }
+}
+/// Remembers the unfinished setup in memory.
+final class MemoryUnfinishedSetup: UnfinishedSetupStore, @unchecked Sendable {
+  private let lock = NSLock()
+  private var deviceID: String?
+  init(_ deviceID: String? = nil) { self.deviceID = deviceID }
+  func load() -> String? { lock.withLock { deviceID } }
+  func save(_ deviceID: String?) { lock.withLock { self.deviceID = deviceID } }
 }
 /// The pairing window never closes in these tests.
 @MainActor private struct OpenWindowClock: SetupClock {
@@ -194,4 +215,99 @@ private let editing = SetupFlow.State.editingNetwork(
   #expect(flow.state == .failed(.controllerReset, .enterCode))
   await flow.retry()
   #expect(flow.state == .enterCode)
+}
+
+@MainActor private func relaunched(
+  _ resumed: KeptClient, _ store: MemoryEnrolmentStore, _ unfinished: MemoryUnfinishedSetup
+) -> SetupFlow {
+  let transport = Transport()
+  return SetupFlow(
+    factory: Factory(client: KeptClient(.accepts), resumed: resumed), store: store,
+    transportFactory: { transport }, clock: OpenWindowClock(), unfinished: unfinished)
+}
+
+/// The failure this came from: pairing, closing the app and opening it again
+/// asked for the code once more. The relaunch goes back to the network.
+@Test @MainActor func aPairedSetupContinuesAfterARelaunch() async throws {
+  let store = MemoryEnrolmentStore()
+  let unfinished = MemoryUnfinishedSetup()
+  let first = SetupFlow(
+    factory: Factory(client: KeptClient(.accepts)), store: store, transportFactory: { Transport() },
+    clock: OpenWindowClock(), unfinished: unfinished)
+  #expect(first.state == .enterCode)
+  try first.submitCode("valid")
+  await first.connect()
+  await first.confirmWindowOpened()
+  #expect(first.state == editing)
+  #expect(unfinished.load() == KeptClient.deviceID)
+
+  let resumed = KeptClient(.accepts, resuming: KeptClient.paired)
+  let flow = relaunched(resumed, store, unfinished)
+  #expect(flow.state == .connecting)
+  #expect(flow.resumed)
+  await flow.connect()
+  #expect(flow.state == editing)
+  #expect(await resumed.calls == ["discover", "hello", "read"])
+}
+
+@Test @MainActor func nothingUnfinishedStartsAtTheCode() {
+  let flow = relaunched(
+    KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
+    MemoryUnfinishedSetup())
+  #expect(flow.state == .enterCode)
+  #expect(!flow.resumed)
+}
+
+/// No kept enrolment to continue with, such as a Keychain that was cleared:
+/// the code is needed, and the unfinished setup is forgotten.
+@Test @MainActor func anUnfinishedSetupWithNoEnrolmentStartsAtTheCode() {
+  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+  let flow = relaunched(KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore(), unfinished)
+  #expect(flow.state == .enterCode)
+  #expect(unfinished.load() == nil)
+}
+
+/// A resumed session has no setup code, so a refused enrolment or a reset
+/// controller sends the person to scan it.
+@Test(arguments: [KeptClient.Controller.refusesHello, .wasReset])
+@MainActor func aResumeTheControllerRefusesAsksForTheCode(controller: KeptClient.Controller)
+  async throws
+{
+  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+  let flow = relaunched(
+    KeptClient(controller, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
+    unfinished)
+  await flow.connect()
+  guard case .failed(_, let target) = flow.state else {
+    Issue.record("expected a failure, got \(flow.state)")
+    return
+  }
+  #expect(target == .enterCode)
+  #expect(unfinished.load() == nil)
+  await flow.retry()
+  #expect(flow.state == .enterCode)
+}
+
+@Test @MainActor func writingTheNetworkFinishesTheUnfinishedSetup() async throws {
+  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+  let flow = relaunched(
+    KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
+    unfinished)
+  await flow.connect()
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  #expect(flow.state == .written(2))
+  #expect(unfinished.load() == nil)
+}
+
+@Test @MainActor func startingOverForgetsTheUnfinishedSetup() async throws {
+  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+  let flow = relaunched(
+    KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
+    unfinished)
+  #expect(flow.state == .connecting)
+  await flow.reset()
+  #expect(flow.state == .enterCode)
+  #expect(!flow.resumed)
+  #expect(unfinished.load() == nil)
 }

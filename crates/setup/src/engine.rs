@@ -205,10 +205,11 @@ enum Credential {
     /// Not enrolled: the setup code proves `Pair`.
     Code(SetupCode),
     /// An enrolment kept from an earlier launch that no `Hello` has proven yet.
-    /// The setup code stays for pairing again if the controller refuses it.
+    /// The setup code, when one was scanned, stays for pairing again if the
+    /// controller refuses it; without one the session ends there.
     Kept {
         stored: StoredEnrolment,
-        code: SetupCode,
+        code: Option<SetupCode>,
     },
     /// Paired in this session, or kept and accepted by `Hello`. The printed
     /// secret is gone (P-222).
@@ -323,7 +324,32 @@ impl Engine {
         }
     }
 
-    /// The controller the setup code names.
+    /// Continue with the controller `device_id` from an enrolment kept by an
+    /// earlier launch, without its setup code (P-222). The session greets with
+    /// `Hello` and cannot pair: a reset or a refused key needs the code scanned
+    /// again. `None` when `kept` does not decode.
+    #[must_use]
+    pub fn resume(
+        device_id: ControllerId,
+        kept: &[u8],
+        label: &str,
+        client_version: &str,
+        nonces: Box<dyn NonceSource>,
+    ) -> Option<Self> {
+        let stored = StoredEnrolment::decode(kept).ok()?;
+        Some(Self {
+            device_id,
+            credential: Some(Credential::Kept { stored, code: None }),
+            enrolment: None,
+            label: fit_text(label, MAX_LABEL, FALLBACK_LABEL),
+            client_version: fit_text(client_version, MAX_STRING, CLIENT_VERSION),
+            nonces,
+            next_req: 1,
+            stage: Stage::Idle,
+        })
+    }
+
+    /// The controller this session is for.
     #[must_use]
     pub const fn device_id(&self) -> ControllerId {
         self.device_id
@@ -358,7 +384,10 @@ impl Engine {
         };
         match self.credential.take() {
             Some(Credential::Code(code)) => {
-                self.credential = Some(Credential::Kept { stored, code });
+                self.credential = Some(Credential::Kept {
+                    stored,
+                    code: Some(code),
+                });
                 true
             }
             other @ (Some(Credential::Kept { .. } | Credential::Enrolled(_)) | None) => {
@@ -460,8 +489,9 @@ impl Engine {
             Some(Credential::Code(code)) => (Some(Credential::Code(code)), None),
             Some(Credential::Kept { stored, code }) => match stored.restore(&found) {
                 Ok(enrolment) => (Some(Credential::Kept { stored, code }), Some(enrolment)),
-                // Kept for another epoch: pair again with the code in hand.
-                Err(_) => (Some(Credential::Code(code)), None),
+                // Kept for another epoch: pair again with the code in hand, or
+                // with none, the controller was reset and the code is needed.
+                Err(_) => (code.map(Credential::Code), None),
             },
             Some(Credential::Enrolled(stored)) => match stored.restore(&found) {
                 Ok(enrolment) => (Some(Credential::Enrolled(stored)), Some(enrolment)),
@@ -640,7 +670,7 @@ impl Engine {
             // until that `Pair` succeeds.
             Err(SetupFailure::ConnectionDropped) => match self.credential.take() {
                 Some(Credential::Kept { code, .. }) => {
-                    self.credential = Some(Credential::Code(code));
+                    self.credential = code.map(Credential::Code);
                     self.enrolment = None;
                     Err(SetupFailure::EnrolmentRefused)
                 }
