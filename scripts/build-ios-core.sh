@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build origin89-setup for iOS devices and the simulator, wrap the static
-# libraries in an XCFramework, and generate the Swift bindings.
+# Build origin89-setup for iOS devices, the simulator and macOS (the bench
+# tool, apps/ios/SetupBench), wrap the static libraries in an XCFramework, and
+# generate the Swift bindings.
 #
 #   scripts/build-ios-core.sh [output-dir]    (default: apps/ios/SetupCore/Generated)
 #
@@ -14,7 +15,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-$root/apps/ios/SetupCore/Generated}"
 lib=liborigin89_setup.a
-targets=(aarch64-apple-ios aarch64-apple-ios-sim)
+targets=(aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin)
 
 cd "$root"
 for target in "${targets[@]}"; do
@@ -37,6 +38,7 @@ mv "$out/swift/Origin89SetupCoreFFI.modulemap" "$out/headers/module.modulemap"
 xcodebuild -create-xcframework \
     -library "target/aarch64-apple-ios/release/$lib" -headers "$out/headers" \
     -library "target/aarch64-apple-ios-sim/release/$lib" -headers "$out/headers" \
+    -library "target/aarch64-apple-darwin/release/$lib" -headers "$out/headers" \
     -output "$out/Origin89SetupCoreFFI.xcframework"
 rm -rf "$out/headers"
 

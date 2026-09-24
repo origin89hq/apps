@@ -11,7 +11,7 @@ if !FileManager.default.fileExists(atPath: generated) {
 
 let package = Package(
   name: "SetupCore",
-  platforms: [.iOS(.v17)],
+  platforms: [.iOS(.v17), .macOS(.v14)],
   products: [.library(name: "SetupCore", targets: ["SetupCore"])],
   dependencies: [.package(path: "../SetupKit")],
   targets: [
