@@ -16,7 +16,9 @@ use km43::{
     SignedClaim, StateSeq, Tagged, Time, TimeAck, Topology, Version, Wrapper,
 };
 use origin89_setup::{
-    Engine, NetworkChange, NetworkSettings, NonceSource, SetupCode, SetupFailure, SetupSession,
+    Engine, HeardNetwork, JoinFailure, NetworkBand, NetworkChange, NetworkScan, NetworkSecurity,
+    NetworkSettings, NonceSource, RadioState, RadioStatus, ScanProgress, ScanRefusal, SetupCode,
+    SetupFailure, SetupSession, WifiStatus,
 };
 use serde_json::Value;
 
@@ -90,6 +92,7 @@ struct Controller {
     epoch: Epoch,
     challenge: [u8; 16],
     session: Option<(SessionKey, ClientId)>,
+    capabilities: u32,
 }
 
 impl Controller {
@@ -102,6 +105,7 @@ impl Controller {
             epoch: Epoch::new(1).unwrap(),
             challenge: b16("/inputs/challenge"),
             session: None,
+            capabilities: Self::report().capabilities,
         }
     }
 
@@ -207,7 +211,11 @@ impl Controller {
         assert_eq!(accepted.inner.client_id.get(), CLIENT_ID);
         let key = enrolment.session_key(&handshake, handle());
         let mut payload = buffer();
-        let len = Self::report().encode(&mut payload).unwrap();
+        let report = HelloReport {
+            capabilities: self.capabilities,
+            ..Self::report()
+        };
+        let len = report.encode(&mut payload).unwrap();
         let frame = Self::wrapped(&key, MessageType::HelloResponse, req, &payload[..len]);
         self.session = Some((key, enrolment.client_id()));
         frame
@@ -1210,4 +1218,270 @@ fn cbor_reader_is_used_as_published() {
     assert_eq!(envelope.keys(), 0);
     let body: CborReader<'_> = envelope.into_body();
     body.finish().unwrap();
+}
+
+/// Bit 8: the controller answers `WifiScan` and `WifiStatus` (P-216).
+const REPORTS_WIFI: u32 = 1 << 8;
+
+/// An open session with a controller whose `Hello` sets bit 8.
+fn wifi_session() -> (Engine, Controller) {
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    controller.capabilities |= REPORTS_WIFI;
+    let request = engine.discover_request().unwrap();
+    engine
+        .discover_reply(&controller.discover(&request))
+        .unwrap()
+        .unwrap();
+    let request = engine.pair_request().unwrap();
+    let ack = controller.pair(
+        &request,
+        Outcome::Enrolled(ClientId::new(CLIENT_ID).unwrap()),
+        b16("/inputs/next_challenge"),
+    );
+    engine.pair_reply(&ack).unwrap().unwrap();
+    let request = engine.hello_request().unwrap();
+    let info = engine
+        .hello_reply(&controller.hello(&request))
+        .unwrap()
+        .unwrap();
+    assert!(info.reports_wifi);
+    (engine, controller)
+}
+
+fn scan(engine: &mut Engine, controller: &Controller, refresh: bool, answer: &[u8]) -> NetworkScan {
+    let request = engine.wifi_scan_request(refresh).unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiScan);
+    let reply = controller.reply(MessageType::WifiScanResponse, req, answer);
+    engine.wifi_scan_reply(&reply).unwrap().unwrap()
+}
+
+fn status(engine: &mut Engine, controller: &Controller, answer: &[u8]) -> WifiStatus {
+    let request = engine.wifi_status_request().unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiStatus);
+    let reply = controller.reply(MessageType::WifiStatusResponse, req, answer);
+    engine.wifi_status_reply(&reply).unwrap().unwrap()
+}
+
+#[test]
+fn wifi_scan_matches_the_vectors() {
+    let (mut engine, controller) = wifi_session();
+
+    let request = engine.wifi_scan_request(true).unwrap();
+    let (req, body) = controller.unwrap_request(&request, MessageType::WifiScan);
+    assert_eq!(body, bytes("/bodies/wifiscan_0x11/body_cbor"));
+    let reply = controller.reply(
+        MessageType::WifiScanResponse,
+        req,
+        &bytes("/bodies/wifiscan_0x91/body_cbor"),
+    );
+    let answer = engine.wifi_scan_reply(&reply).unwrap().unwrap();
+    assert_eq!(answer.progress, ScanProgress::Complete);
+    assert_eq!(answer.refused, None);
+    let heard = answer.heard.expect("a completed scan holds a list");
+    assert_eq!(heard.age_ms, 4200);
+    assert_eq!(heard.unlisted, 4);
+    assert_eq!(heard.networks.len(), 3);
+    assert_eq!(
+        heard.networks[0],
+        HeardNetwork {
+            ssid: "cabin".to_owned(),
+            rssi: -48,
+            security: NetworkSecurity::Wpa3Personal,
+            band: NetworkBand::Ghz24,
+            channel: 6,
+        }
+    );
+    // The published list's second row: a 32-byte SSID with multibyte characters.
+    assert_eq!(heard.networks[1].ssid, "chalet-été-réseau-du-voisin-2");
+    assert_eq!(heard.networks[1].ssid.len(), 32);
+    assert!(
+        heard
+            .networks
+            .windows(2)
+            .all(|pair| pair[0].rssi >= pair[1].rssi),
+        "strongest first"
+    );
+
+    // Refused: the section was never written, so there is no list either.
+    let answer = scan(
+        &mut engine,
+        &controller,
+        true,
+        &bytes("/bodies/wifiscan_refused_0x91/body_cbor"),
+    );
+    assert_eq!(
+        answer,
+        NetworkScan {
+            progress: ScanProgress::None,
+            refused: Some(ScanRefusal::RadioOff),
+            heard: None,
+        }
+    );
+
+    // Reading without a refresh asks for no scan.
+    let request = engine.wifi_scan_request(false).unwrap();
+    let (_, body) = controller.unwrap_request(&request, MessageType::WifiScan);
+    assert_eq!(body, hex::decode("a101f4").unwrap());
+}
+
+#[test]
+fn wifi_status_matches_the_vectors() {
+    let (mut engine, controller) = wifi_session();
+
+    let request = engine.wifi_status_request().unwrap();
+    let (req, body) = controller.unwrap_request(&request, MessageType::WifiStatus);
+    assert_eq!(body, hex::decode("a0").unwrap());
+    let reply = controller.reply(
+        MessageType::WifiStatusResponse,
+        req,
+        &bytes("/bodies/wifistatus_0x92/body_cbor"),
+    );
+    let joined = engine.wifi_status_reply(&reply).unwrap().unwrap();
+    assert_eq!(
+        joined,
+        WifiStatus {
+            section: 2,
+            radio: Some(RadioStatus {
+                version: 2,
+                state: RadioState::Joined {
+                    address: "192.168.1.42".to_owned(),
+                },
+            }),
+        }
+    );
+    assert!(matches!(
+        joined.state_for(2),
+        Some(RadioState::Joined { .. })
+    ));
+    assert_eq!(joined.state_for(3), None);
+
+    let unknown = status(
+        &mut engine,
+        &controller,
+        &bytes("/bodies/wifistatus_unknown_0x92/body_cbor"),
+    );
+    assert_eq!(
+        unknown,
+        WifiStatus {
+            section: 2,
+            radio: None,
+        }
+    );
+
+    // The session is still usable for the network steps.
+    read_unwritten(&mut engine, &controller);
+}
+
+#[test]
+fn a_failed_join_reports_its_reason() {
+    let (mut engine, controller) = wifi_session();
+    // Section 3, radio still on version 2 and failed auth_failed: the keys of
+    // the published 0x0806 record, which WifiStatus shares.
+    let answer = status(
+        &mut engine,
+        &controller,
+        &bytes("/bodies/wifistatuschanged_0x0806/body_cbor"),
+    );
+    assert_eq!(answer.section, 3);
+    assert_eq!(
+        answer.radio,
+        Some(RadioStatus {
+            version: 2,
+            state: RadioState::Failed {
+                reason: JoinFailure::AuthFailed,
+            },
+        })
+    );
+    assert_eq!(
+        answer.state_for(3),
+        None,
+        "the verdict is on the previous write"
+    );
+}
+
+#[test]
+fn wifi_steps_are_refused_without_capability_bit_8() {
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    assert_eq!(controller.capabilities & REPORTS_WIFI, 0);
+    open_session(&mut engine, &mut controller, b16("/inputs/next_challenge"));
+    assert_eq!(
+        engine.wifi_scan_request(true),
+        Err(SetupFailure::ProtocolError)
+    );
+    assert_eq!(
+        engine.wifi_status_request(),
+        Err(SetupFailure::ProtocolError)
+    );
+    // Nothing was sent and the session carries on.
+    read_unwritten(&mut engine, &controller);
+}
+
+#[test]
+fn a_scan_answer_that_breaks_p217_ends_the_session() {
+    // `complete` with no list.
+    let (mut engine, controller) = wifi_session();
+    let request = engine.wifi_scan_request(false).unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiScan);
+    let reply = controller.reply(
+        MessageType::WifiScanResponse,
+        req,
+        &hex::decode("a10103").unwrap(),
+    );
+    assert_eq!(
+        engine.wifi_scan_reply(&reply),
+        Err(SetupFailure::ProtocolError)
+    );
+    assert_eq!(
+        engine.read_network_request(),
+        Err(SetupFailure::ProtocolError)
+    );
+}
+
+#[test]
+fn a_status_whose_state_lacks_its_field_is_refused() {
+    // `joined` with no address.
+    let (mut engine, controller) = wifi_session();
+    let request = engine.wifi_status_request().unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiStatus);
+    let reply = controller.reply(
+        MessageType::WifiStatusResponse,
+        req,
+        &hex::decode("a3010202020303").unwrap(),
+    );
+    assert_eq!(
+        engine.wifi_status_reply(&reply),
+        Err(SetupFailure::ProtocolError)
+    );
+}
+
+#[test]
+fn a_scan_answer_with_a_bad_mac_is_refused() {
+    let (mut engine, controller) = wifi_session();
+    let request = engine.wifi_scan_request(false).unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiScan);
+    let mut reply = controller.reply(
+        MessageType::WifiScanResponse,
+        req,
+        &bytes("/bodies/wifiscan_0x91/body_cbor"),
+    );
+    let last = reply.len() - 1;
+    reply[last] ^= 1;
+    assert_eq!(
+        engine.wifi_scan_reply(&reply),
+        Err(SetupFailure::ProtocolError)
+    );
+}
+
+#[test]
+fn a_frame_for_another_request_leaves_the_scan_outstanding() {
+    let (mut engine, controller) = wifi_session();
+    let request = engine.wifi_scan_request(false).unwrap();
+    let (req, _) = controller.unwrap_request(&request, MessageType::WifiScan);
+    let answer = bytes("/bodies/wifiscan_0x91/body_cbor");
+    let stray = controller.reply(MessageType::WifiScanResponse, ReqId(req.0 + 5), &answer);
+    assert_eq!(engine.wifi_scan_reply(&stray), Ok(None));
+    let reply = controller.reply(MessageType::WifiScanResponse, req, &answer);
+    assert!(engine.wifi_scan_reply(&reply).unwrap().is_some());
 }

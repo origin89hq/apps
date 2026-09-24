@@ -24,7 +24,26 @@ import Observation
 /// transport that can exclude peers skips it and connects again. Once
 /// enrolled, a reconnect runs Discover and Hello again with the enrolment the
 /// client keeps; it never pairs twice.
+///
+/// On a controller that reports Wi-Fi (P-216) the flow also reads what its
+/// radio hears while the network is edited, and watches the join after a
+/// write. Both run in one background task that every other step stops and
+/// awaits first, so two requests never share the connection.
 @MainActor @Observable public final class SetupFlow {
+  /// After a write, what the radio did with it.
+  public enum JoinWatch: Sendable, Equatable {
+    case idle, waiting
+    case joined(address: String)
+    case failed(JoinFailure)
+    /// The radio gave no verdict on this write in time.
+    case noAnswer
+  }
+  /// A running scan is read again this often, and given up after `scanLimit`.
+  static let pollInterval: Duration = .seconds(2)
+  static let scanLimit: Duration = .seconds(20)
+  /// How long a write's join is watched.
+  static let joinLimit: Duration = .seconds(60)
+
   public enum RetryTarget: Sendable, Equatable {
     case enterCode, connecting, openWindow, readingNetwork, editingNetwork
     case written(UInt32)
@@ -48,6 +67,12 @@ import Observation
   public private(set) var state: State = .enterCode
   public private(set) var controller: ControllerSummary?
   public private(set) var network: NetworkSettings?
+  /// Whether the controller answers Wi-Fi scan and status reads (P-216).
+  public private(set) var reportsWiFi = false
+  /// The latest scan answer this session read.
+  public private(set) var scan: NetworkScan?
+  public private(set) var isScanning = false
+  public private(set) var join: JoinWatch = .idle
   /// The network version this session wrote, kept across Time failures.
   public var writtenVersion: UInt32? {
     if case .written(let version) = resume { version } else { nil }
@@ -63,6 +88,8 @@ import Observation
   private var generation = 0
   private var isConnecting = false
   private var deadlineTask: Task<Void, Never>?
+  /// The scan or join watch in flight, the only request not awaited in line.
+  private var backgroundTask: Task<Void, Never>?
 
   public init(
     factory: any ControllerClientFactory,
@@ -142,8 +169,9 @@ import Observation
       deadlineTask?.cancel()
       resume = .readNetwork
       state = .greeting
-      try await client.hello()
+      let report = try await client.hello()
       guard generation == operation else { return }
+      reportsWiFi = report.reportsWiFi
       await readNetwork()
     } catch {
       guard generation == operation else { return }
@@ -162,8 +190,9 @@ import Observation
       guard generation == operation else { return }
       controller = discovered
       state = .greeting
-      try await client.hello()
+      let report = try await client.hello()
       guard generation == operation else { return }
+      reportsWiFi = report.reportsWiFi
     } catch {
       guard generation == operation else { return }
       await fail(error)
@@ -172,7 +201,9 @@ import Observation
     switch resume {
     case .pair: state = .openWindow
     case .readNetwork: await readNetwork()
-    case .written(let version): state = .written(version)
+    case .written(let version):
+      state = .written(version)
+      if join == .waiting { watchJoin(version) }
     }
   }
 
@@ -229,6 +260,7 @@ import Observation
     }
   }
   public func writeNetwork(_ change: NetworkChange) async {
+    await stopBackground()
     guard case .editingNetwork(let settings) = state, let client else { return }
     guard change.isValid(comparedTo: settings) else {
       state = .failed(.invalidConfig, .editingNetwork)
@@ -241,6 +273,8 @@ import Observation
       guard generation == operation else { return }
       resume = .written(version)
       state = .written(version)
+      // A cleared network has nothing to join.
+      if reportsWiFi, change.ssid != nil { watchJoin(version) }
     } catch {
       guard generation == operation else { return }
       await fail(error)
@@ -250,11 +284,15 @@ import Observation
   /// connection. A refusal keeps the session for another try; a lost
   /// connection, a timeout or a bad reply ends it, and retry reconnects.
   public func setTime(_ date: Date = Date()) async {
+    await stopBackground()
     guard case .written(let version) = state, let client else { return }
     if !transportActive {
       state = .connecting
       await connect()
       guard state == .written(version), transportActive else { return }
+      // The reconnect may have resumed the join watch; it goes before Time.
+      await stopBackground()
+      guard state == .written(version) else { return }
     }
     let operation = generation
     state = .settingTime
@@ -268,6 +306,125 @@ import Observation
       await fail(error)
     }
   }
+  /// Ask the controller what its radio hears. A refresh starts a scan unless
+  /// the controller refuses (P-218); while it runs the list is read again
+  /// every `pollInterval`, up to `scanLimit`. Only while the network is
+  /// edited, on a controller that reports Wi-Fi.
+  public func scanNetworks(refresh: Bool = true) {
+    guard case .editingNetwork = state, reportsWiFi, backgroundTask == nil, let client else {
+      return
+    }
+    let operation = generation
+    isScanning = true
+    backgroundTask = Task { [weak self] in
+      await self?.runScan(client, refresh: refresh, operation)
+    }
+  }
+
+  private func runScan(_ client: any ControllerClient, refresh: Bool, _ operation: Int) async {
+    defer {
+      if generation == operation {
+        isScanning = false
+        backgroundTask = nil
+      }
+    }
+    var refresh = refresh
+    let deadline = clock.now + Self.scanLimit
+    do {
+      while true {
+        let answer = try await client.scanWiFi(refresh: refresh)
+        guard generation == operation else { return }
+        scan = answer
+        guard answer.progress == .running, !Task.isCancelled, clock.now < deadline else { return }
+        refresh = false
+        do { try await clock.sleep(until: clock.now + Self.pollInterval) } catch { return }
+        guard !Task.isCancelled, generation == operation else { return }
+      }
+    } catch {
+      guard generation == operation else { return }
+      await fail(error)
+    }
+  }
+
+  /// Read the radio's status every `pollInterval` until it has a verdict on
+  /// `version` or `joinLimit` passes.
+  private func watchJoin(_ version: UInt32) {
+    guard reportsWiFi, backgroundTask == nil, let client else { return }
+    let operation = generation
+    join = .waiting
+    backgroundTask = Task { [weak self] in
+      await self?.runWatch(client, version, operation)
+    }
+  }
+
+  private func runWatch(_ client: any ControllerClient, _ version: UInt32, _ operation: Int) async {
+    defer { if generation == operation { backgroundTask = nil } }
+    let deadline = clock.now + Self.joinLimit
+    do {
+      while true {
+        let status = try await client.wifiStatus()
+        guard generation == operation else { return }
+        switch status.state(for: version) {
+        case .joined(let address):
+          join = .joined(address: address)
+          return
+        case .failed(let reason):
+          join = .failed(reason)
+          return
+        // Off, joining, or a report on another version: no verdict yet.
+        case .off, .joining, nil: break
+        }
+        guard !Task.isCancelled else { return }
+        guard clock.now < deadline else {
+          join = .noAnswer
+          return
+        }
+        do { try await clock.sleep(until: clock.now + Self.pollInterval) } catch { return }
+        guard !Task.isCancelled, generation == operation else { return }
+      }
+    } catch {
+      guard generation == operation else { return }
+      await fail(error)
+    }
+  }
+
+  /// Watch the join of the written network again, reconnecting if needed.
+  public func watchJoinAgain() async {
+    guard case .written(let version) = state, reportsWiFi else { return }
+    if !transportActive {
+      join = .waiting
+      state = .connecting
+      await connect()
+      return
+    }
+    watchJoin(version)
+  }
+
+  /// Leave a written network to choose another: read the section again,
+  /// reconnecting if needed.
+  public func changeNetwork() async {
+    guard case .written = state else { return }
+    await stopBackground()
+    guard case .written = state else { return }
+    join = .idle
+    resume = .readNetwork
+    if transportActive {
+      await readNetwork()
+    } else {
+      state = .connecting
+      await connect()
+    }
+  }
+
+  /// Stop the scan or join watch and wait for its request to finish.
+  private func stopBackground() async {
+    guard let task = backgroundTask else { return }
+    task.cancel()
+    await task.value
+    backgroundTask = nil
+    isScanning = false
+  }
+
   /// The person is done: close the connection and finish.
   public func finish() async {
     guard let version = writtenVersion else { return }
@@ -314,6 +471,9 @@ import Observation
     client = nil
     controller = nil
     network = nil
+    reportsWiFi = false
+    scan = nil
+    join = .idle
     resume = .pair
     state = .enterCode
   }
@@ -322,6 +482,10 @@ import Observation
   private func close() async {
     generation += 1
     deadlineTask?.cancel()
+    backgroundTask?.cancel()
+    backgroundTask = nil
+    isScanning = false
+    if join == .waiting { join = .idle }
     isConnecting = false
     await client?.close()
     await closeTransport()

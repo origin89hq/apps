@@ -55,15 +55,11 @@ struct SetupView: View {
     case .readingNetwork:
       Progress(title: "Reading network settings", detail: nil)
     case .editingNetwork(let settings):
-      NetworkView(settings: settings) { change in Task { await flow.writeNetwork(change) } }
+      NetworkView(settings: settings, flow: flow)
     case .writingNetwork:
       Progress(title: "Saving network settings", detail: nil)
     case .written(let version):
-      WrittenView(version: version) {
-        Task { await flow.setTime() }
-      } done: {
-        Task { await flow.finish() }
-      }
+      WrittenView(version: version, flow: flow)
     case .finished(let version, let timeSet):
       FinishedView(version: version, timeSet: timeSet) { Task { await startOver() } }
     case .settingTime:
@@ -458,27 +454,64 @@ private struct Step: View {
 
 private struct WrittenView: View {
   let version: UInt32
-  let setTime: () -> Void
-  let done: () -> Void
+  let flow: SetupFlow
+
   var body: some View {
     Form {
       Section {
         Text("Network settings saved")
         Origin89Status("Saved", tone: .nominal)
         Text(
-          "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
+          flow.reportsWiFi
+            ? "The controller accepted version \(version) and passes it to its radio."
+            : "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
         )
       }
+      if flow.reportsWiFi { JoinSection(join: flow.join, flow: flow) }
       Section {
-        Button("Set the controller's clock from this phone", action: setTime)
+        Button("Set the controller's clock from this phone") { Task { await flow.setTime() } }
       } footer: {
         Text("Optional. The time is sent as a signed write, then setup finishes.")
       }
       Section {
-        Button("Done", action: done)
+        Button("Done") { Task { await flow.finish() } }
       } footer: {
         Text("Ends setup and disconnects. A controller accepts only two connections at once.")
       }
+    }
+  }
+}
+
+/// What the radio did with the written network, as the controller reports
+/// it (P-219). The report is shown, never acted on (P-221).
+private struct JoinSection: View {
+  let join: SetupFlow.JoinWatch
+  let flow: SetupFlow
+
+  var body: some View {
+    Section {
+      switch join {
+      case .idle:
+        Button("Check whether the controller joined") { Task { await flow.watchJoinAgain() } }
+      case .waiting:
+        HStack(spacing: 12) {
+          ProgressView()
+          Text("Waiting for the controller to join the network…")
+        }
+      case .joined(let address):
+        Origin89Status("Joined", tone: .nominal)
+        Text("The controller is on the network at \(address).")
+      case .failed(let reason):
+        Origin89Status("Not joined", tone: .alarm)
+        Origin89Notice(reason.message, tone: .alarm)
+        Button("Choose another network or password") { Task { await flow.changeNetwork() } }
+      case .noAnswer:
+        Origin89Status("No answer", tone: .warning)
+        Text("The controller has not said whether it joined the network.")
+        Button("Check again") { Task { await flow.watchJoinAgain() } }
+      }
+    } header: {
+      Text("Wi-Fi")
     }
   }
 }

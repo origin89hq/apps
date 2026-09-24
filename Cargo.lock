@@ -351,9 +351,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "km43"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f64bf2ba3dfc907f74c38e4aa9abcf7b117e84c1ea9f27118bfeb25aab8d84a"
+checksum = "419b8518904b89260bc5a7f485de6e8baa5f4cf52153847be6ea784c68a7937d"
 dependencies = [
  "hkdf",
  "hmac",

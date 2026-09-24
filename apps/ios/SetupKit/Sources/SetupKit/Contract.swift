@@ -86,8 +86,12 @@ public struct NetworkChange: Sendable, Equatable {
 public protocol ControllerClient: Sendable {
   func discover() async throws(SetupFailure) -> ControllerSummary
   func pair() async throws(SetupFailure)
-  func hello() async throws(SetupFailure)
+  func hello() async throws(SetupFailure) -> SessionReport
   func readNetwork() async throws(SetupFailure) -> NetworkSettings
+  /// `WifiScan`; only after a `Hello` whose report says `reportsWiFi` (P-216).
+  func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan
+  /// `WifiStatus`; only after a `Hello` whose report says `reportsWiFi` (P-216).
+  func wifiStatus() async throws(SetupFailure) -> WiFiStatus
   func writeNetwork(_ change: NetworkChange, expectedVersion: UInt32) async throws(SetupFailure)
     -> UInt32
   func setTime(_ date: Date) async throws(SetupFailure)

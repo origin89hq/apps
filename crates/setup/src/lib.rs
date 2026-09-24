@@ -1,7 +1,8 @@
 //! Controller setup for the Origin89 apps: the P-049 setup code, a sans-IO
 //! KM43 client that runs `Discover`, `Pair`, `Hello`, `GetConfig` and
-//! `SetConfig` of the network section and an optional signed `Time`, and the
-//! BLE GATT fragmentation that carries its messages.
+//! `SetConfig` of the network section, `WifiScan` and `WifiStatus` where the
+//! controller answers them, and an optional signed `Time`, and the BLE GATT
+//! fragmentation that carries its messages.
 //!
 //! The wire format is the `km43` crate, the one the controller itself speaks.
 //! Keys and session state stay in Rust; Swift sends and receives opaque frames
@@ -24,12 +25,14 @@
 mod ble;
 mod code;
 mod engine;
+mod wifi;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use ble::*;
 pub use code::*;
 pub use engine::*;
+pub use wifi::*;
 
 uniffi::setup_scaffolding!();
 
@@ -129,6 +132,26 @@ impl SetupSession {
     /// Judge a frame received after `write_network_request`; the new version.
     pub fn write_network_reply(&self, frame: &[u8]) -> Result<Option<u32>, SetupFailure> {
         self.engine().write_network_reply(frame)
+    }
+
+    /// The `WifiScan` frame; `refresh` also asks for a new scan.
+    pub fn wifi_scan_request(&self, refresh: bool) -> Result<Vec<u8>, SetupFailure> {
+        self.engine().wifi_scan_request(refresh)
+    }
+
+    /// Judge a frame received after `wifi_scan_request`.
+    pub fn wifi_scan_reply(&self, frame: &[u8]) -> Result<Option<NetworkScan>, SetupFailure> {
+        self.engine().wifi_scan_reply(frame)
+    }
+
+    /// The `WifiStatus` frame.
+    pub fn wifi_status_request(&self) -> Result<Vec<u8>, SetupFailure> {
+        self.engine().wifi_status_request()
+    }
+
+    /// Judge a frame received after `wifi_status_request`.
+    pub fn wifi_status_reply(&self, frame: &[u8]) -> Result<Option<WifiStatus>, SetupFailure> {
+        self.engine().wifi_status_reply(frame)
     }
 
     /// The signed `Time` frame for `at_ms`, milliseconds since the Unix epoch.

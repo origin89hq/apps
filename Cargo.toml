@@ -10,7 +10,7 @@ publish = false
 
 [workspace.dependencies]
 # Exact: the wire format the controller speaks is the one this release encodes.
-km43 = "=0.6.1"
+km43 = "=0.6.2"
 getrandom = "0.4.3"
 thiserror = "2.0.21"
 uniffi = "0.32.2"

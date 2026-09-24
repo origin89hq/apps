@@ -51,8 +51,26 @@ actor RustControllerClient: ControllerClient {
     _ = try await exchange(session.pairRequest, session.pairReply)
   }
 
-  func hello() async throws(SetupKit.SetupFailure) {
-    _ = try await exchange(session.helloRequest, session.helloReply)
+  func hello() async throws(SetupKit.SetupFailure) -> SetupKit.SessionReport {
+    let info = try await exchange(session.helloRequest, session.helloReply)
+    return SetupKit.SessionReport(reportsWiFi: info.reportsWifi)
+  }
+
+  func scanWiFi(refresh: Bool) async throws(SetupKit.SetupFailure) -> SetupKit.NetworkScan {
+    let session = self.session
+    let scan = try await exchange(
+      { try session.wifiScanRequest(refresh: refresh) }, session.wifiScanReply)
+    return SetupKit.NetworkScan(
+      progress: Self.progress(scan.progress), refused: scan.refused.map(Self.refusal),
+      networks: scan.heard?.networks.map(Self.network),
+      unlisted: Int(scan.heard?.unlisted ?? 0))
+  }
+
+  func wifiStatus() async throws(SetupKit.SetupFailure) -> SetupKit.WiFiStatus {
+    let status = try await exchange(session.wifiStatusRequest, session.wifiStatusReply)
+    return SetupKit.WiFiStatus(
+      section: status.section,
+      radio: status.radio.map { (version: $0.version, state: Self.radio($0.state)) })
   }
 
   func readNetwork() async throws(SetupKit.SetupFailure) -> SetupKit.NetworkSettings {
@@ -104,6 +122,61 @@ actor RustControllerClient: ControllerClient {
       }
     }
     throw .protocolError
+  }
+
+  static func progress(_ progress: Origin89SetupCore.ScanProgress) -> SetupKit.ScanProgress {
+    switch progress {
+    case .none: .none
+    case .running: .running
+    case .complete: .complete
+    case .failed: .failed
+    }
+  }
+
+  static func refusal(_ refusal: Origin89SetupCore.ScanRefusal) -> SetupKit.ScanRefusal {
+    switch refusal {
+    case .tooSoon: .tooSoon
+    case .radioOff: .radioOff
+    case .linkDown: .linkDown
+    case .unauthorised: .unauthorised
+    }
+  }
+
+  static func network(_ heard: Origin89SetupCore.HeardNetwork) -> SetupKit.HeardNetwork {
+    let security: SetupKit.NetworkSecurity =
+      switch heard.security {
+      case .open: .open
+      case .wpa2Personal: .wpa2Personal
+      case .wpa3Personal: .wpa3Personal
+      case .other: .other
+      }
+    let band: SetupKit.NetworkBand =
+      switch heard.band {
+      case .ghz24: .ghz24
+      case .ghz5: .ghz5
+      case .ghz6: .ghz6
+      }
+    return SetupKit.HeardNetwork(
+      ssid: heard.ssid, rssi: heard.rssi, security: security, band: band, channel: heard.channel)
+  }
+
+  static func radio(_ state: Origin89SetupCore.RadioState) -> SetupKit.RadioState {
+    switch state {
+    case .off: .off
+    case .joining: .joining
+    case .joined(let address): .joined(address: address)
+    case .failed(let reason): .failed(joinFailure(reason))
+    }
+  }
+
+  static func joinFailure(_ reason: Origin89SetupCore.JoinFailure) -> SetupKit.JoinFailure {
+    switch reason {
+    case .authFailed: .authFailed
+    case .notFound: .notFound
+    case .noIp: .noIP
+    case .lost: .lost
+    case .other: .other
+    }
   }
 
   static func failure(_ error: TransportError) -> SetupKit.SetupFailure {
