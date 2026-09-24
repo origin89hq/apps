@@ -124,71 +124,271 @@ enum CodeEntryMessage {
     "That is not a setup code. Scan the code on the controller's label, or paste it exactly as printed."
 }
 
+/// The enter-code step. With a camera, the scanner comes first and the paste
+/// field is one tap away; without one, only the paste field shows.
 private struct CodeEntryView: View {
   let submit: (String) throws(SetupCodeError) -> Void
   @State private var code = ""
   @State private var refused = false
   @State private var camera = CameraAccess.current
-  @State private var scanning = false
+  @State private var scannerOpen = true
+  @State private var manualShown = false
+  @State private var capabilities: CameraCapabilities?
+  @State private var cameraFailed = false
+  @State private var scanRefused = false
+  @State private var torchOn = false
+  @State private var zoomed = false
+  @State private var hint = ScanHint<ContinuousClock.Instant>()
+  @State private var hintVisible = false
+  @FocusState private var codeFocused: Bool
   @Environment(\.openURL) private var openURL
+  @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private static let manualID = "manual"
+
+  private var scanning: Bool { camera != .unavailable && scannerOpen }
 
   var body: some View {
-    Form {
-      Section {
-        TextField("km43:1:…", text: $code, axis: .vertical)
-          .font(.system(.body, design: .monospaced))
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .onChange(of: code) { refused = false }
-        HStack {
-          Button("Paste") { code = UIPasteboard.general.string ?? "" }
-          if camera != .unavailable {
-            Spacer()
-            Button("Scan QR code") { Task { await scan() } }
-          }
-        }
-        .buttonStyle(.borderless)
-      } header: {
-        Text("Setup code")
-      } footer: {
-        Text(
-          refused
-            ? CodeEntryMessage.refused
-            : "Scan or paste the code printed on the controller's label. It is used once to pair and is not kept."
-        )
-        .foregroundStyle(refused ? Color.origin89.alarm : .secondary)
+    ScrollViewReader { proxy in
+      Form {
+        if scanning { scannerSection }
+        if !scanning || manualShown { manualSections }
       }
-      if camera == .denied || camera == .restricted {
-        Section {
-          Button("Open Settings") {
-            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-          }
-        } footer: {
-          Text(
-            camera == .denied
-              ? "Camera access is off for Origin89. Turn it on in Settings to scan, or paste the code."
-              : "Camera access is restricted on this phone. Paste the code instead."
-          )
-        }
-      }
-      Section {
-        Button("Connect") {
-          do { try submit(code) } catch { refused = true }
-        }
-        .disabled(code.isEmpty)
+      .onChange(of: manualShown) { _, shown in
+        guard shown else { return }
+        withAnimation { proxy.scrollTo(Self.manualID, anchor: .top) }
+        codeFocused = true
       }
     }
-    .sheet(isPresented: $scanning) {
-      CodeScannerSheet(submit: submit)
+    .safeAreaInset(edge: .bottom) {
+      if hintVisible {
+        hintCard.transition(
+          reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+      }
+    }
+    .animation(
+      reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.4), value: hintVisible
+    )
+    .toolbar {
+      if scanning {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(action: closeScanner) { Image(systemName: "xmark") }
+            .accessibilityLabel("Close scanner")
+        }
+      }
+    }
+    .task { await askForCamera() }
+    .task(id: hint.deadline) { await showHintWhenDue() }
+    .onChange(of: scenePhase) { _, phase in
+      // The torch never stays on behind the app.
+      if phase != .active { torchOn = false }
+      if phase == .active, camera != .unavailable { camera = CameraAccess.current }
     }
   }
 
-  private func scan() async {
-    camera = CameraAccess.current
-    if camera == .notDetermined { camera = await CameraAccess.request() }
-    if camera == .allowed {
-      refused = false
-      scanning = true
+  // MARK: Scanner
+
+  @ViewBuilder private var scannerSection: some View {
+    Section {
+      Text("Scan the QR code on your controller")
+        .font(.origin89Value)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 8, trailing: 4))
+      scannerCard
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets())
+      if !manualShown {
+        Button("Enter code manually", action: revealManual)
+          .frame(maxWidth: .infinity)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+      }
+    }
+  }
+
+  @ViewBuilder private var scannerCard: some View {
+    switch camera {
+    case .allowed:
+      ScannerCard(
+        torchOn: torchOn, zoomed: zoomed, capabilities: capabilities, refused: scanRefused,
+        failed: cameraFailed,
+        toggleTorch: { torchOn.toggle() },
+        toggleZoom: { zoomed.toggle() },
+        ready: cameraReady,
+        scanned: scanned)
+    case .denied, .restricted:
+      CameraCard {
+        CardMessage(
+          text: camera == .denied
+            ? "Camera access is off for Origin89. Turn it on in Settings to scan, or enter the code manually."
+            : "Camera access is restricted on this phone. Enter the code manually instead."
+        ) {
+          Button("Open Settings") {
+            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+          }
+          .buttonStyle(.borderedProminent)
+        }
+      }
+    case .notDetermined, .unavailable:
+      CameraCard { CardMessage(text: "Waiting for camera access.") }
+    }
+  }
+
+  private func cameraReady(_ capabilities: CameraCapabilities?) {
+    self.capabilities = capabilities
+    if capabilities == nil {
+      cameraFailed = true
+      hint.scanStopped()
+    } else {
+      hint.scanStarted(at: .now)
+    }
+  }
+
+  /// Submit a scanned code through the same path as paste. A refusal shows
+  /// over the preview, and the scanner rearms and restarts the hint's wait.
+  private func scanned(_ code: String) -> Bool {
+    do {
+      try submit(code)
+    } catch {
+      scanRefused = true
+      hint.scanStarted(at: .now)
+      return false
+    }
+    UINotificationFeedbackGenerator().notificationOccurred(.success)
+    torchOn = false
+    hint.scanStopped()
+    return true
+  }
+
+  private func askForCamera() async {
+    guard scanning, camera == .notDetermined else { return }
+    camera = await CameraAccess.request()
+  }
+
+  private func closeScanner() {
+    scannerOpen = false
+    torchOn = false
+    zoomed = false
+    capabilities = nil
+    cameraFailed = false
+    scanRefused = false
+    hint.scanStopped()
+  }
+
+  private func openScanner() {
+    hint = ScanHint()
+    scannerOpen = true
+    Task { await askForCamera() }
+  }
+
+  // MARK: Hint
+
+  private func showHintWhenDue() async {
+    guard let deadline = hint.deadline else {
+      hintVisible = false
+      return
+    }
+    hintVisible = hint.isVisible(at: .now)
+    guard !hintVisible else { return }
+    do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+    hintVisible = hint.isVisible(at: .now)
+  }
+
+  private var hintCard: some View {
+    let hasTorch = capabilities?.hasTorch == true
+    return VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top) {
+        Image(systemName: "flashlight.on.fill")
+          .font(.title2)
+          .foregroundStyle(Color.origin89.action)
+          .accessibilityHidden(true)
+        Spacer()
+        Button {
+          hint.dismiss()
+        } label: {
+          Image(systemName: "xmark").foregroundStyle(Color.origin89.muted)
+        }
+        .accessibilityLabel("Dismiss")
+      }
+      Text("Can't scan the code?").font(.headline)
+      Text(
+        hasTorch
+          ? "Try turning on the flashlight for a better scan, or hold the phone a little farther from the label."
+          : "Make sure the label is well lit, and hold the phone a little farther from it."
+      )
+      .foregroundStyle(Color.origin89.muted)
+      ViewThatFits(in: .horizontal) {
+        HStack {
+          Spacer()
+          hintActions(hasTorch: hasTorch)
+        }
+        VStack(alignment: .trailing) { hintActions(hasTorch: hasTorch) }
+          .frame(maxWidth: .infinity, alignment: .trailing)
+      }
+    }
+    .padding()
+    .background(
+      Color.origin89.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+    )
+    .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+    .padding(.horizontal)
+    .padding(.bottom, 8)
+  }
+
+  @ViewBuilder private func hintActions(hasTorch: Bool) -> some View {
+    Button("Enter the code instead", action: revealManual)
+      .buttonStyle(.bordered)
+    if hasTorch, !torchOn {
+      Button("Turn on flashlight") {
+        torchOn = true
+        hint.dismiss()
+      }
+      .buttonStyle(.borderedProminent)
+    }
+  }
+
+  private func revealManual() {
+    hint.dismiss()
+    manualShown = true
+  }
+
+  // MARK: Manual entry
+
+  @ViewBuilder private var manualSections: some View {
+    Section {
+      TextField("km43:1:…", text: $code, axis: .vertical)
+        .font(.system(.body, design: .monospaced))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .focused($codeFocused)
+        .onChange(of: code) { refused = false }
+        .id(Self.manualID)
+      HStack {
+        Button("Paste") { code = UIPasteboard.general.string ?? "" }
+        if camera != .unavailable, !scannerOpen {
+          Spacer()
+          Button("Scan QR code", action: openScanner)
+        }
+      }
+      .buttonStyle(.borderless)
+    } header: {
+      Text("Setup code")
+    } footer: {
+      Text(
+        refused
+          ? CodeEntryMessage.refused
+          : "Paste the code printed on the controller's label. It is used once to pair and is not kept."
+      )
+      .foregroundStyle(refused ? Color.origin89.alarm : .secondary)
+    }
+    Section {
+      Button("Connect") {
+        do { try submit(code) } catch { refused = true }
+      }
+      .disabled(code.isEmpty)
     }
   }
 }

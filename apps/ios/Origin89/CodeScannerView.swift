@@ -26,74 +26,195 @@ enum CameraAccess {
   }
 }
 
-/// Scans the setup code and hands it to `submit`, the same path paste uses.
-/// A refused code keeps the sheet open so the person can scan again.
-struct CodeScannerSheet: View {
-  let submit: (String) throws(SetupCodeError) -> Void
-  @Environment(\.dismiss) private var dismiss
-  @State private var refused = false
-  @State private var attempt = 0
-  @State private var cameraFailed = false
+/// What the running camera can do; the card shows only the controls it supports.
+struct CameraCapabilities: Sendable, Equatable {
+  var hasTorch: Bool
+  /// The zoom the zoom button switches to: about 2x, never past the device maximum.
+  var zoomedFactor: CGFloat
 
-  var body: some View {
-    NavigationStack {
-      ZStack(alignment: .bottom) {
-        QRCameraView(attempt: attempt) { code in
-          do {
-            try submit(code)
-            dismiss()
-          } catch {
-            refused = true
-          }
-        } failed: {
-          cameraFailed = true
-        }
-        .ignoresSafeArea(edges: .bottom)
-        status
-          .padding()
-          .frame(maxWidth: .infinity)
-          .background(.regularMaterial)
-      }
-      .navigationTitle("Scan setup code")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-      }
-    }
-  }
+  var canZoom: Bool { zoomedFactor > 1 }
+}
 
-  @ViewBuilder private var status: some View {
-    if cameraFailed {
-      Text("The camera could not start. Paste the code instead.")
-    } else if refused {
-      VStack(spacing: 12) {
-        Text(CodeEntryMessage.refused).foregroundStyle(Color.origin89.alarm)
-        Button("Scan again") {
-          refused = false
-          attempt += 1
-        }
-        .buttonStyle(.borderedProminent)
-      }
-    } else {
-      Text("Point the camera at the QR code on the controller's label.")
-    }
+/// The square the corner brackets mark and the only area scanned for codes.
+enum Viewfinder {
+  static func rect(in bounds: CGRect) -> CGRect {
+    let side = min(bounds.width, bounds.height) * 0.68
+    return CGRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
   }
 }
 
-/// The camera preview. Each new `attempt` rearms the scanner after a refusal.
+/// The live camera in a rounded card: corner brackets, torch and zoom buttons,
+/// and a banner when a scanned code is refused. `scanned` returns whether the
+/// code was accepted; after a refusal the scanner rearms itself.
+struct ScannerCard: View {
+  let torchOn: Bool
+  let zoomed: Bool
+  let capabilities: CameraCapabilities?
+  let refused: Bool
+  let failed: Bool
+  let toggleTorch: () -> Void
+  let toggleZoom: () -> Void
+  let ready: (CameraCapabilities?) -> Void
+  let scanned: (String) -> Bool
+
+  var body: some View {
+    CameraCard {
+      if failed {
+        CardMessage(text: "The camera could not start. Enter the code manually instead.")
+      } else {
+        ZStack {
+          QRCameraView(
+            torchOn: torchOn,
+            zoomFactor: zoomed ? (capabilities?.zoomedFactor ?? 1) : 1,
+            ready: ready, scanned: scanned
+          )
+          .accessibilityLabel("Camera viewfinder")
+          CornerBrackets()
+            .stroke(
+              Color.origin89.onFill, style: StrokeStyle(lineWidth: 4, lineCap: .round)
+            )
+            .accessibilityHidden(true)
+          overlays
+        }
+      }
+    }
+  }
+
+  private var overlays: some View {
+    VStack {
+      if refused {
+        Text(CodeEntryMessage.refused)
+          .font(.origin89Label)
+          .foregroundStyle(Color.origin89.onFill)
+          .padding(12)
+          .background(Color.origin89.alarmDeep, in: RoundedRectangle(cornerRadius: 12))
+          .padding(12)
+          .transition(.opacity)
+      }
+      Spacer()
+      HStack {
+        if capabilities?.hasTorch == true {
+          RoundButton(
+            systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill", lit: torchOn,
+            action: toggleTorch
+          )
+          .accessibilityLabel("Flashlight")
+          .accessibilityValue(torchOn ? "On" : "Off")
+        }
+        Spacer()
+        if let capabilities, capabilities.canZoom {
+          RoundButton(
+            systemImage: zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", lit: zoomed,
+            action: toggleZoom
+          )
+          .accessibilityLabel("Zoom")
+          .accessibilityValue(zoomed ? Self.zoomText(capabilities.zoomedFactor) : "1x")
+        }
+      }
+      .padding(12)
+    }
+    .animation(.default, value: refused)
+  }
+
+  private static func zoomText(_ factor: CGFloat) -> String {
+    "\(Double(factor).formatted(.number.precision(.fractionLength(0...1))))x"
+  }
+}
+
+/// The rounded frame the camera, or a message in its place, sits in.
+struct CameraCard<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    content()
+      .frame(maxWidth: 360)
+      .aspectRatio(3 / 4, contentMode: .fit)
+      .background(Color.black)
+      .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+      .frame(maxWidth: .infinity)
+  }
+}
+
+/// Text shown in the card in place of the camera.
+struct CardMessage<Actions: View>: View {
+  let text: String
+  @ViewBuilder let actions: () -> Actions
+
+  var body: some View {
+    VStack(spacing: 16) {
+      Image(systemName: "camera.fill")
+        .font(.largeTitle)
+        .foregroundStyle(Color.origin89.muted)
+        .accessibilityHidden(true)
+      Text(text)
+        .multilineTextAlignment(.center)
+        .foregroundStyle(Color.origin89.onFill)
+      actions()
+    }
+    .padding(24)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
+extension CardMessage where Actions == EmptyView {
+  init(text: String) { self.init(text: text) { EmptyView() } }
+}
+
+private struct CornerBrackets: Shape {
+  func path(in rect: CGRect) -> Path {
+    let frame = Viewfinder.rect(in: rect)
+    let arm = frame.width * 0.18
+    var path = Path()
+    for (corner, dx, dy) in [
+      (CGPoint(x: frame.minX, y: frame.minY), 1.0, 1.0),
+      (CGPoint(x: frame.maxX, y: frame.minY), -1.0, 1.0),
+      (CGPoint(x: frame.minX, y: frame.maxY), 1.0, -1.0),
+      (CGPoint(x: frame.maxX, y: frame.maxY), -1.0, -1.0),
+    ] {
+      path.move(to: CGPoint(x: corner.x, y: corner.y + dy * arm))
+      path.addLine(to: corner)
+      path.addLine(to: CGPoint(x: corner.x + dx * arm, y: corner.y))
+    }
+    return path
+  }
+}
+
+private struct RoundButton: View {
+  let systemImage: String
+  let lit: Bool
+  let action: () -> Void
+
+  @ScaledMetric(relativeTo: .body) private var size = 48
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: systemImage)
+        .font(.body.weight(.semibold))
+        .foregroundStyle(lit ? Color.origin89.action : Color.origin89.onFill)
+        .frame(width: size, height: size)
+        .background(
+          lit ? AnyShapeStyle(Color.origin89.onFill) : AnyShapeStyle(.black.opacity(0.5)),
+          in: Circle())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// The camera preview. It pushes torch and zoom changes to the capture session.
 private struct QRCameraView: UIViewControllerRepresentable {
-  let attempt: Int
-  let scanned: (String) -> Void
-  let failed: () -> Void
+  let torchOn: Bool
+  let zoomFactor: CGFloat
+  let ready: (CameraCapabilities?) -> Void
+  let scanned: (String) -> Bool
 
   func makeUIViewController(context: Context) -> QRScannerController {
-    QRScannerController(scanned: scanned, failed: failed)
+    QRScannerController(ready: ready, scanned: scanned)
   }
 
   func updateUIViewController(_ controller: QRScannerController, context: Context) {
+    controller.ready = ready
     controller.scanned = scanned
-    controller.failed = failed
-    controller.rescan(attempt: attempt)
+    controller.apply(torchOn: torchOn, zoomFactor: zoomFactor)
   }
 
   static func dismantleUIViewController(_ controller: QRScannerController, coordinator: ()) {
@@ -102,16 +223,22 @@ private struct QRCameraView: UIViewControllerRepresentable {
 }
 
 private final class QRScannerController: UIViewController {
-  var scanned: (String) -> Void
-  var failed: () -> Void
+  /// How long a refused code keeps the scanner paused before it rearms.
+  private static let rearmDelay = Duration.seconds(1.5)
+
+  var ready: (CameraCapabilities?) -> Void
+  var scanned: (String) -> Bool
   private var gate = ScanGate()
-  private var attempt = 0
+  private var running = false
+  private var stopped = false
   private let capture = CaptureSession()
   private var preview: AVCaptureVideoPreviewLayer?
+  private var torchOn = false
+  private var zoomFactor: CGFloat = 1
 
-  init(scanned: @escaping (String) -> Void, failed: @escaping () -> Void) {
+  init(ready: @escaping (CameraCapabilities?) -> Void, scanned: @escaping (String) -> Bool) {
+    self.ready = ready
     self.scanned = scanned
-    self.failed = failed
     super.init(nibName: nil, bundle: nil)
   }
 
@@ -125,29 +252,54 @@ private final class QRScannerController: UIViewController {
     view.layer.addSublayer(preview)
     self.preview = preview
     let delegate = MetadataDelegate { [weak self] string in self?.receive(string) }
-    capture.start(delegate: delegate) { [weak self] configured in
-      if !configured { self?.failed() }
+    capture.start(delegate: delegate) { [weak self] capabilities in
+      guard let self, !stopped else { return }
+      running = capabilities != nil
+      if running {
+        updateRectOfInterest()
+        capture.set(torchOn: torchOn, zoomFactor: zoomFactor)
+      }
+      ready(capabilities)
     }
   }
 
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     preview?.frame = view.bounds
+    updateRectOfInterest()
   }
 
-  func rescan(attempt: Int) {
-    guard attempt != self.attempt else { return }
-    self.attempt = attempt
-    gate.rearm()
-    capture.resume()
+  func apply(torchOn: Bool, zoomFactor: CGFloat) {
+    guard torchOn != self.torchOn || zoomFactor != self.zoomFactor else { return }
+    self.torchOn = torchOn
+    self.zoomFactor = zoomFactor
+    if running { capture.set(torchOn: torchOn, zoomFactor: zoomFactor) }
   }
 
-  func stop() { capture.stop() }
+  func stop() {
+    stopped = true
+    running = false
+    capture.stop()
+  }
+
+  /// Limit detection to the bracketed square. The conversion needs a running
+  /// session and a laid-out preview.
+  private func updateRectOfInterest() {
+    guard running, let preview, !view.bounds.isEmpty else { return }
+    let area = preview.metadataOutputRectConverted(fromLayerRect: Viewfinder.rect(in: view.bounds))
+    capture.setRectOfInterest(area)
+  }
 
   private func receive(_ string: String) {
-    guard let code = gate.pass(string) else { return }
-    capture.stop()
-    scanned(code)
+    guard running, let code = gate.pass(string) else { return }
+    if scanned(code) {
+      stop()
+    } else {
+      Task { [weak self] in
+        try? await Task.sleep(for: Self.rearmDelay)
+        self?.gate.rearm()
+      }
+    }
   }
 }
 
@@ -181,45 +333,69 @@ private final class CaptureSession: @unchecked Sendable {
   let session = AVCaptureSession()
   private let queue = DispatchQueue(label: "com.origin89.apps.ios.qr-capture")
   private var delegate: MetadataDelegate?
+  private var camera: AVCaptureDevice?
+  private let output = AVCaptureMetadataOutput()
 
   /// Configure the camera for QR codes only and start it. `configured` runs
-  /// on the main actor.
+  /// on the main actor with what the camera supports, or nil when it failed.
   func start(
-    delegate: MetadataDelegate, configured: @escaping @MainActor @Sendable (Bool) -> Void
+    delegate: MetadataDelegate,
+    configured: @escaping @MainActor @Sendable (CameraCapabilities?) -> Void
   ) {
     queue.async { [self] in
-      let ok = configure(delegate: delegate)
-      if ok { session.startRunning() }
-      Task { @MainActor in configured(ok) }
+      let capabilities = configure(delegate: delegate)
+      if capabilities != nil { session.startRunning() }
+      Task { @MainActor in configured(capabilities) }
     }
   }
 
-  func resume() {
+  /// Set the torch and zoom, clamped to what the camera supports.
+  func set(torchOn: Bool, zoomFactor: CGFloat) {
     queue.async { [self] in
-      if delegate != nil, !session.isRunning { session.startRunning() }
+      guard let camera, session.isRunning, (try? camera.lockForConfiguration()) != nil else {
+        return
+      }
+      defer { camera.unlockForConfiguration() }
+      if camera.hasTorch, camera.isTorchAvailable {
+        camera.torchMode = torchOn ? .on : .off
+      }
+      camera.videoZoomFactor = min(
+        max(zoomFactor, camera.minAvailableVideoZoomFactor), camera.maxAvailableVideoZoomFactor)
     }
   }
 
+  func setRectOfInterest(_ area: CGRect) {
+    queue.async { [self] in output.rectOfInterest = area }
+  }
+
+  /// Turn the torch off and stop the camera.
   func stop() {
     queue.async { [self] in
+      if let camera, camera.hasTorch, camera.torchMode != .off,
+        (try? camera.lockForConfiguration()) != nil
+      {
+        camera.torchMode = .off
+        camera.unlockForConfiguration()
+      }
       if session.isRunning { session.stopRunning() }
     }
   }
 
-  private func configure(delegate: MetadataDelegate) -> Bool {
+  private func configure(delegate: MetadataDelegate) -> CameraCapabilities? {
     guard let camera = AVCaptureDevice.default(for: .video),
       let input = try? AVCaptureDeviceInput(device: camera)
-    else { return false }
-    let output = AVCaptureMetadataOutput()
+    else { return nil }
     session.beginConfiguration()
     defer { session.commitConfiguration() }
-    guard session.canAddInput(input), session.canAddOutput(output) else { return false }
+    guard session.canAddInput(input), session.canAddOutput(output) else { return nil }
     session.addInput(input)
     session.addOutput(output)
-    guard output.availableMetadataObjectTypes.contains(.qr) else { return false }
+    guard output.availableMetadataObjectTypes.contains(.qr) else { return nil }
     output.setMetadataObjectsDelegate(delegate, queue: queue)
     output.metadataObjectTypes = [.qr]
     self.delegate = delegate
-    return true
+    self.camera = camera
+    return CameraCapabilities(
+      hasTorch: camera.hasTorch, zoomedFactor: min(2, camera.maxAvailableVideoZoomFactor))
   }
 }
