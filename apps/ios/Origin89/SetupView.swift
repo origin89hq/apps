@@ -34,7 +34,7 @@ struct SetupView: View {
       if phase == .background { Task { await flow.suspend() } }
     }
     .onDisappear { Task { await flow.suspend() } }
-    // A setup an earlier launch left unfinished starts here, in `connecting`.
+    // A launch with a last controller starts here, in `connecting`.
     .task { await flow.connect() }
   }
 
@@ -49,7 +49,7 @@ struct SetupView: View {
       Progress(
         title: "Connecting over Bluetooth",
         detail: flow.resumed
-          ? "Continuing setup with the controller this phone paired with. Keep the phone near it."
+          ? "Reconnecting to the controller this phone paired with. Keep the phone near it."
           : "Keep the phone near the controller.")
     case .openWindow:
       OpenWindowView(keptEnrolmentLost: flow.keptEnrolmentLost) {

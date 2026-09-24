@@ -111,8 +111,8 @@ private struct Factory: ControllerClientFactory {
     return resumed
   }
 }
-/// Remembers the unfinished setup in memory.
-final class MemoryUnfinishedSetup: UnfinishedSetupStore, @unchecked Sendable {
+/// Remembers the last controller in memory.
+final class MemoryLastController: LastControllerStore, @unchecked Sendable {
   private let lock = NSLock()
   private var deviceID: String?
   init(_ deviceID: String? = nil) { self.deviceID = deviceID }
@@ -218,31 +218,31 @@ private let editing = SetupFlow.State.editingNetwork(
 }
 
 @MainActor private func relaunched(
-  _ resumed: KeptClient, _ store: MemoryEnrolmentStore, _ unfinished: MemoryUnfinishedSetup
+  _ resumed: KeptClient, _ store: MemoryEnrolmentStore, _ lastController: MemoryLastController
 ) -> SetupFlow {
   let transport = Transport()
   return SetupFlow(
     factory: Factory(client: KeptClient(.accepts), resumed: resumed), store: store,
-    transportFactory: { transport }, clock: OpenWindowClock(), unfinished: unfinished)
+    transportFactory: { transport }, clock: OpenWindowClock(), lastController: lastController)
 }
 
 /// The failure this came from: pairing, closing the app and opening it again
 /// asked for the code once more. The relaunch goes back to the network.
 @Test @MainActor func aPairedSetupContinuesAfterARelaunch() async throws {
   let store = MemoryEnrolmentStore()
-  let unfinished = MemoryUnfinishedSetup()
+  let lastController = MemoryLastController()
   let first = SetupFlow(
     factory: Factory(client: KeptClient(.accepts)), store: store, transportFactory: { Transport() },
-    clock: OpenWindowClock(), unfinished: unfinished)
+    clock: OpenWindowClock(), lastController: lastController)
   #expect(first.state == .enterCode)
   try first.submitCode("valid")
   await first.connect()
   await first.confirmWindowOpened()
   #expect(first.state == editing)
-  #expect(unfinished.load() == KeptClient.deviceID)
+  #expect(lastController.load() == KeptClient.deviceID)
 
   let resumed = KeptClient(.accepts, resuming: KeptClient.paired)
-  let flow = relaunched(resumed, store, unfinished)
+  let flow = relaunched(resumed, store, lastController)
   #expect(flow.state == .connecting)
   #expect(flow.resumed)
   await flow.connect()
@@ -250,21 +250,22 @@ private let editing = SetupFlow.State.editingNetwork(
   #expect(await resumed.calls == ["discover", "hello", "read"])
 }
 
-@Test @MainActor func nothingUnfinishedStartsAtTheCode() {
+@Test @MainActor func noLastControllerStartsAtTheCode() {
   let flow = relaunched(
     KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
-    MemoryUnfinishedSetup())
+    MemoryLastController())
   #expect(flow.state == .enterCode)
   #expect(!flow.resumed)
 }
 
 /// No kept enrolment to continue with, such as a Keychain that was cleared:
-/// the code is needed, and the unfinished setup is forgotten.
-@Test @MainActor func anUnfinishedSetupWithNoEnrolmentStartsAtTheCode() {
-  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
-  let flow = relaunched(KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore(), unfinished)
+/// the code is needed, and the last controller is forgotten.
+@Test @MainActor func aLastControllerWithNoEnrolmentStartsAtTheCode() {
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let flow = relaunched(
+    KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore(), lastController)
   #expect(flow.state == .enterCode)
-  #expect(unfinished.load() == nil)
+  #expect(lastController.load() == nil)
 }
 
 /// A resumed session has no setup code, so a refused enrolment or a reset
@@ -273,41 +274,69 @@ private let editing = SetupFlow.State.editingNetwork(
 @MainActor func aResumeTheControllerRefusesAsksForTheCode(controller: KeptClient.Controller)
   async throws
 {
-  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+  let lastController = MemoryLastController(KeptClient.deviceID)
   let flow = relaunched(
     KeptClient(controller, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
-    unfinished)
+    lastController)
   await flow.connect()
   guard case .failed(_, let target) = flow.state else {
     Issue.record("expected a failure, got \(flow.state)")
     return
   }
   #expect(target == .enterCode)
-  #expect(unfinished.load() == nil)
+  #expect(lastController.load() == nil)
   await flow.retry()
   #expect(flow.state == .enterCode)
 }
 
-@Test @MainActor func writingTheNetworkFinishesTheUnfinishedSetup() async throws {
-  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
-  let flow = relaunched(
-    KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
-    unfinished)
+/// The failure from issue #18: after a network was written, a relaunch asked
+/// for the code and the pairing window. It reconnects and reads the network,
+/// so the phone can change or forget it.
+@Test @MainActor func aRelaunchAfterAWrittenNetworkReopensIt() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let flow = relaunched(KeptClient(.accepts, resuming: kept), store, lastController)
   await flow.connect()
   await flow.writeNetwork(
     NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
   #expect(flow.state == .written(2))
-  #expect(unfinished.load() == nil)
+  await flow.finish()
+  #expect(flow.state == .finished(version: 2, timeSet: false))
+  #expect(lastController.load() == KeptClient.deviceID)
+
+  let reopened = KeptClient(.accepts, resuming: kept)
+  let next = relaunched(reopened, store, lastController)
+  #expect(next.state == .connecting)
+  await next.connect()
+  #expect(next.state == editing)
+  #expect(await reopened.calls == ["discover", "hello", "read"])
 }
 
-@Test @MainActor func startingOverForgetsTheUnfinishedSetup() async throws {
-  let unfinished = MemoryUnfinishedSetup(KeptClient.deviceID)
+/// After a written network, the kept enrolment may stop working; the
+/// relaunch then asks for the code and forgets the controller.
+@Test @MainActor func aRefusedReopenAfterAWriteAsksForTheCode() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let first = relaunched(KeptClient(.accepts, resuming: kept), store, lastController)
+  await first.connect()
+  await first.writeNetwork(
+    NetworkChange(ssid: nil, passphrase: nil, country: "CA", hostname: "unit"))
+  await first.finish()
+
+  let next = relaunched(KeptClient(.refusesHello, resuming: kept), store, lastController)
+  await next.connect()
+  #expect(next.state == .failed(.enrolmentRefused, .enterCode))
+  #expect(lastController.load() == nil)
+}
+
+@Test @MainActor func startingOverForgetsTheLastController() async throws {
+  let lastController = MemoryLastController(KeptClient.deviceID)
   let flow = relaunched(
     KeptClient(.accepts, resuming: kept), MemoryEnrolmentStore([KeptClient.deviceID: kept]),
-    unfinished)
+    lastController)
   #expect(flow.state == .connecting)
   await flow.reset()
   #expect(flow.state == .enterCode)
   #expect(!flow.resumed)
-  #expect(unfinished.load() == nil)
+  #expect(lastController.load() == nil)
 }

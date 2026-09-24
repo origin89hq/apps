@@ -82,7 +82,7 @@ struct FileEnrolmentStore: EnrolmentStore {
 }
 
 /// The controller to continue with, as a relaunch of the app would find it.
-final class BenchUnfinished: UnfinishedSetupStore, @unchecked Sendable {
+final class BenchLastController: LastControllerStore, @unchecked Sendable {
   private let lock = NSLock()
   private var deviceID: String?
   init(_ deviceID: String?) { self.deviceID = deviceID }
@@ -173,7 +173,7 @@ func label(_ state: SetupFlow.State) -> String {
         label: "Origin89 bench \(Host.current().localizedName ?? "Mac")"),
       store: store,
       transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
-      unfinished: BenchUnfinished(deviceID))
+      lastController: BenchLastController(deviceID))
   }
 
   /// Print state, join and scan changes until `done` holds or `limit` passes.
@@ -300,7 +300,7 @@ func label(_ state: SetupFlow.State) -> String {
     await watch(flow, for: watchFor) { flow in
       if case .failed = flow.state { return true }
       switch flow.join {
-      case .joined, .failed, .noAnswer: return true
+      case .joined, .failed, .noAnswer, .connectionLost: return true
       case .idle, .waiting: return false
       }
     }
