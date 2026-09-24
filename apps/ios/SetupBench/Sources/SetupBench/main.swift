@@ -300,7 +300,7 @@ func label(_ state: SetupFlow.State) -> String {
     await watch(flow, for: watchFor) { flow in
       if case .failed = flow.state { return true }
       switch flow.join {
-      case .joined, .failed, .noAnswer: return true
+      case .joined, .failed, .noAnswer, .connectionLost: return true
       case .idle, .waiting: return false
       }
     }
