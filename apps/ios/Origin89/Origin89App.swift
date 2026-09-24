@@ -1,4 +1,3 @@
-import Origin89UI
 import SetupCore
 import SetupKit
 import SwiftUI
@@ -8,8 +7,6 @@ struct Origin89App: App {
   @State private var flow = SetupFlow(
     factory: RustControllerClientFactory(label: DeviceLabel.current),
     transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) })
-
-  init() { Origin89Fonts.register() }
 
   var body: some Scene {
     WindowGroup {

@@ -21,7 +21,7 @@ struct SetupView: View {
           }
         }
     }
-    .tint(Palette.color(\.action))
+    .tint(Color.origin89.action)
     .onChange(of: flow.state) { old, new in
       if case .failed = new { failedDuring = old }
       switch new {
@@ -95,22 +95,10 @@ struct SetupView: View {
   }
 }
 
-/// Origin89 palette colors that follow the current appearance.
-enum Palette {
-  static func color(_ token: any KeyPath<Origin89Palette, Color> & Sendable) -> Color {
-    Color(
-      UIColor { traits in
-        let palette =
-          traits.userInterfaceStyle == .dark ? Origin89Tokens.dark : Origin89Tokens.light
-        return UIColor(palette[keyPath: token])
-      })
-  }
-}
-
 private struct Heading: View {
   let text: String
   var body: some View {
-    Text(text).font(.custom("InterTight-SemiBold", size: 22, relativeTo: .title2))
+    Text(text).font(.origin89Value)
   }
 }
 
@@ -118,14 +106,16 @@ private struct Progress: View {
   let title: String
   let detail: String?
   var body: some View {
-    VStack(spacing: 16) {
-      ProgressView()
-      Heading(text: title)
-      if let detail { Text(detail).foregroundStyle(.secondary) }
+    SetupPage {
+      VStack(spacing: 16) {
+        ProgressView()
+        Heading(text: title)
+        if let detail { Text(detail).foregroundStyle(.secondary) }
+      }
+      .multilineTextAlignment(.center)
+      .padding()
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .multilineTextAlignment(.center)
-    .padding()
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }
 
@@ -166,7 +156,7 @@ private struct CodeEntryView: View {
             ? CodeEntryMessage.refused
             : "Scan or paste the code printed on the controller's label. It is used once to pair and is not kept."
         )
-        .foregroundStyle(refused ? Palette.color(\.alarm) : .secondary)
+        .foregroundStyle(refused ? Color.origin89.alarm : .secondary)
       }
       if camera == .denied || camera == .restricted {
         Section {
@@ -206,16 +196,18 @@ private struct CodeEntryView: View {
 private struct OpenWindowView: View {
   let opened: () -> Void
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Heading(text: "Open the pairing window")
-      Text(
-        "Press the pairing button on the controller's panel. The window stays open for 120 seconds, and pairing must finish inside it."
-      )
-      Button("The window is open, pair now", action: opened)
-        .buttonStyle(.borderedProminent)
-      Spacer()
+    SetupPage {
+      VStack(alignment: .leading, spacing: 16) {
+        Heading(text: "Open the pairing window")
+        Text(
+          "Press the pairing button on the controller's panel. The window stays open for 120 seconds, and pairing must finish inside it."
+        )
+        Button("The window is open, pair now", action: opened)
+          .buttonStyle(.borderedProminent)
+        Spacer()
+      }
+      .padding()
     }
-    .padding()
   }
 }
 
@@ -224,24 +216,27 @@ private struct PairingView: View {
   let windowOpenedAt: Date?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      Heading(text: "Pairing")
-      if let windowOpenedAt, state != .greeting {
-        TimelineView(.periodic(from: windowOpenedAt, by: 1)) { context in
-          let left = max(0, 120 - Int(context.date.timeIntervalSince(windowOpenedAt)))
-          Text("Window closes in \(left / 60):\(String(format: "%02d", left % 60))")
-            .font(.custom("IBMPlexMono-Regular", size: 17, relativeTo: .body))
-            .monospacedDigit()
-            .foregroundStyle(left > 20 ? Palette.color(\.fg) : Palette.color(\.warning))
+    SetupPage {
+      VStack(alignment: .leading, spacing: 20) {
+        Heading(text: "Pairing")
+        if let windowOpenedAt, state != .greeting {
+          TimelineView(.periodic(from: windowOpenedAt, by: 1)) { context in
+            let left = max(0, 120 - Int(context.date.timeIntervalSince(windowOpenedAt)))
+            Text("Window closes in \(left / 60):\(String(format: "%02d", left % 60))")
+              .font(.origin89Data)
+              .monospacedDigit()
+              .foregroundStyle(left > 20 ? Color.origin89.fg : Color.origin89.warning)
+          }
         }
+        Step(
+          title: "Finding the controller", done: state != .discovering,
+          active: state == .discovering)
+        Step(title: "Proving the setup code", done: state == .greeting, active: state == .pairing)
+        Step(title: "Opening a session", done: false, active: state == .greeting)
+        Spacer()
       }
-      Step(
-        title: "Finding the controller", done: state != .discovering, active: state == .discovering)
-      Step(title: "Proving the setup code", done: state == .greeting, active: state == .pairing)
-      Step(title: "Opening a session", done: false, active: state == .greeting)
-      Spacer()
+      .padding()
     }
-    .padding()
   }
 }
 
@@ -255,9 +250,9 @@ private struct Step: View {
         ProgressView()
       } else {
         Image(systemName: done ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(done ? Palette.color(\.nominal) : Palette.color(\.faint))
+          .foregroundStyle(done ? Color.origin89.nominal : Color.origin89.faint)
       }
-      Text(title).foregroundStyle(done || active ? Palette.color(\.fg) : Palette.color(\.muted))
+      Text(title).foregroundStyle(done || active ? Color.origin89.fg : Color.origin89.muted)
     }
   }
 }
@@ -270,7 +265,7 @@ private struct WrittenView: View {
     Form {
       Section {
         Label("Network settings saved", systemImage: "checkmark.circle.fill")
-          .foregroundStyle(Palette.color(\.nominal))
+          .foregroundStyle(Color.origin89.nominal)
         Text(
           "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
         )
@@ -294,19 +289,21 @@ private struct FinishedView: View {
   let timeSet: Bool
   let startOver: () -> Void
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Label("Setup finished", systemImage: "checkmark.circle.fill")
-        .font(.custom("InterTight-SemiBold", size: 22, relativeTo: .title2))
-        .foregroundStyle(Palette.color(\.nominal))
-      Text("Network settings version \(version) are on the controller.")
-      if timeSet { Text("The controller's clock was set from this phone.") }
-      Text("This phone has disconnected from the controller.")
-        .foregroundStyle(.secondary)
-      Button("Set up another controller", action: startOver)
-        .buttonStyle(.borderedProminent)
-      Spacer()
+    SetupPage {
+      VStack(alignment: .leading, spacing: 16) {
+        Label("Setup finished", systemImage: "checkmark.circle.fill")
+          .font(.origin89Value)
+          .foregroundStyle(Color.origin89.nominal)
+        Text("Network settings version \(version) are on the controller.")
+        if timeSet { Text("The controller's clock was set from this phone.") }
+        Text("This phone has disconnected from the controller.")
+          .foregroundStyle(.secondary)
+        Button("Set up another controller", action: startOver)
+          .buttonStyle(.borderedProminent)
+        Spacer()
+      }
+      .padding()
     }
-    .padding()
   }
 }
 
@@ -315,17 +312,33 @@ private struct FailureView: View {
   let retry: () -> Void
   let startOver: () -> Void
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Label("Setup stopped", systemImage: "exclamationmark.triangle.fill")
-        .font(.custom("InterTight-SemiBold", size: 22, relativeTo: .title2))
-        .foregroundStyle(Palette.color(\.alarm))
-      Text(message)
-      HStack {
-        Button("Try again", action: retry).buttonStyle(.borderedProminent)
-        Button("Start over", action: startOver).buttonStyle(.bordered)
+    SetupPage {
+      VStack(alignment: .leading, spacing: 16) {
+        Label("Setup stopped", systemImage: "exclamationmark.triangle.fill")
+          .font(.origin89Value)
+          .foregroundStyle(Color.origin89.alarm)
+        Text(message)
+        HStack {
+          Button("Try again", action: retry).buttonStyle(.borderedProminent)
+          Button("Start over", action: startOver).buttonStyle(.bordered)
+        }
+        Spacer()
       }
-      Spacer()
+      .padding()
     }
-    .padding()
+  }
+}
+
+/// Keeps short pages full-height and lets longer content scroll in compact layouts.
+private struct SetupPage<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    GeometryReader { geometry in
+      ScrollView {
+        content()
+          .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+      }
+    }
   }
 }

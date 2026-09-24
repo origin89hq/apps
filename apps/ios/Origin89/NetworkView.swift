@@ -47,7 +47,7 @@ struct NetworkView: View {
         Text("Change")
       } footer: {
         if let problem {
-          Text(problem).foregroundStyle(Palette.color(\.warning))
+          Text(problem).foregroundStyle(Color.origin89.warning)
         } else {
           Text("Written against version \(settings.version); the controller checks it again.")
         }
@@ -112,7 +112,7 @@ private struct Row: View {
   let value: String
   var body: some View {
     LabeledContent(label) {
-      Text(value).foregroundStyle(Palette.color(\.fg))
+      Text(value).foregroundStyle(Color.origin89.fg)
     }
   }
 }

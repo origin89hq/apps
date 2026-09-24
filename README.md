@@ -68,7 +68,7 @@ The iOS target links `Origin89UI` through Swift Package Manager from
 that use its components. The package includes native brand tokens, fonts and
 resource licenses; do not copy those assets into the app.
 
-The dependency uses the exact Swift package version `0.2.0`.
+The dependency uses the exact Swift package version `0.3.0`.
 Commit the Xcode project and `Package.resolved` together when updating it.
 Xcode resolves the dependency on first open; the initial build needs network
 access, and later builds can use the cached checkout.

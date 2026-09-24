@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Origin89UI
 import SetupKit
 import SwiftUI
 import UIKit
@@ -66,7 +67,7 @@ struct CodeScannerSheet: View {
       Text("The camera could not start. Paste the code instead.")
     } else if refused {
       VStack(spacing: 12) {
-        Text(CodeEntryMessage.refused).foregroundStyle(Palette.color(\.alarm))
+        Text(CodeEntryMessage.refused).foregroundStyle(Color.origin89.alarm)
         Button("Scan again") {
           refused = false
           attempt += 1

@@ -1,13 +1,13 @@
 {
-  "originHash" : "e073a1830b1c2c970c5dc04d2680792590507d776c26fa3b7144a2e3b69b0bba",
+  "originHash" : "d609b7c8eb76cfa27b864ac6b2de0a856fd0dea4a24229b42cdb1903b51edf40",
   "pins" : [
     {
       "identity" : "ui",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/origin89hq/ui.git",
       "state" : {
-        "revision" : "eeae8ac30460c9786c38637b3f5c53ab20f6f3f6",
-        "version" : "0.2.0"
+        "revision" : "26200367554a176ae7e91c5f6de9d526c4d71a35",
+        "version" : "0.3.0"
       }
     }
   ],
