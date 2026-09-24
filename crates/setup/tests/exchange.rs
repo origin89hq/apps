@@ -1,11 +1,9 @@
 //! The setup exchange against KM43's published vectors.
 //!
-//! `vectors/v1.json` is km43's `docs/protocol/vectors/v1.json` copied verbatim
-//! from commit 92870a5 (the km43 0.6.0 release); the crates.io tarball does not
-//! carry it. Where a vector covers a frame, the frame this client builds is
-//! compared with it byte for byte. Where no vector covers a controller reply,
-//! the reply is built with km43's controller-side API, which is what the
-//! controller firmware links.
+//! Where a vector covers a frame, the frame this client builds is compared
+//! with it byte for byte. Where no vector covers a controller reply, the reply
+//! is built with km43's controller-side API, which is what the controller
+//! firmware links.
 
 use std::collections::VecDeque;
 use std::sync::OnceLock;
@@ -22,7 +20,7 @@ use origin89_setup::{
 };
 use serde_json::Value;
 
-const VECTORS: &str = include_str!("vectors/v1.json");
+use km43::VECTORS_JSON as VECTORS;
 
 fn vectors() -> &'static Value {
     static PARSED: OnceLock<Value> = OnceLock::new();
