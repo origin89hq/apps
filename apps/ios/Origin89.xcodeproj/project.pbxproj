@@ -12,6 +12,7 @@
 		AB890000000000000000000A /* SetupCore in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000008 /* SetupCore */; };
 		AB890000000000000000000C /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000B /* SetupView.swift */; };
 		AB890000000000000000000E /* NetworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000D /* NetworkView.swift */; };
+		AB8900000000000000000010 /* CodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000F /* CodeScannerView.swift */; };
 		3B83354560E6B8315025217E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8E94264721F66A5291BC0C5B /* Assets.xcassets */; };
 		D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */; };
 /* End PBXBuildFile section */
@@ -22,6 +23,7 @@
 		F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Origin89App.swift; sourceTree = "<group>"; };
 		AB890000000000000000000B /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		AB890000000000000000000D /* NetworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkView.swift; sourceTree = "<group>"; };
+		AB890000000000000000000F /* CodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeScannerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,6 +60,7 @@
 			isa = PBXGroup;
 			children = (
 				8E94264721F66A5291BC0C5B /* Assets.xcassets */,
+				AB890000000000000000000F /* CodeScannerView.swift */,
 				AB890000000000000000000D /* NetworkView.swift */,
 				F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */,
 				AB890000000000000000000B /* SetupView.swift */,
@@ -147,6 +150,7 @@
 				D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */,
 				AB890000000000000000000C /* SetupView.swift in Sources */,
 				AB890000000000000000000E /* NetworkView.swift in Sources */,
+				AB8900000000000000000010 /* CodeScannerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,6 +165,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -181,6 +186,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (

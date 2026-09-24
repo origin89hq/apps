@@ -1,9 +1,9 @@
 # Origin89 apps
 
 Web, desktop and mobile applications for Origin89 controllers. The first target
-is a native iOS app in SwiftUI. It sets up a controller: paste its setup code,
-connect over Bluetooth, pair inside the panel's pairing window, read and write
-the network section, and optionally set the controller's clock.
+is a native iOS app in SwiftUI. It sets up a controller: scan or paste its setup
+code, connect over Bluetooth, pair inside the panel's pairing window, read and
+write the network section, and optionally set the controller's clock.
 
 ## iOS development
 
@@ -39,6 +39,7 @@ team. Signing credentials and team IDs stay local. The scaffold uses
 - the Rust core build for device and simulator, and the unsigned simulator app build.
 
 The simulator has no Bluetooth, so a simulator build is compile evidence only.
+It has no camera either, so it offers only paste; a phone offers both scan and paste.
 Pairing, Bluetooth and the network write need the bench: a controller with the
 BLE comms image, an iPhone, and the controller's printed setup code.
 

@@ -2,7 +2,7 @@ import Origin89UI
 import SetupKit
 import SwiftUI
 
-/// The setup flow: paste the code, connect over Bluetooth, pair inside the
+/// The setup flow: scan or paste the code, connect over Bluetooth, pair inside the
 /// panel's window, then read and write the network section.
 struct SetupView: View {
   let flow: SetupFlow
@@ -129,10 +129,18 @@ private struct Progress: View {
   }
 }
 
+enum CodeEntryMessage {
+  static let refused =
+    "That is not a setup code. Scan the code on the controller's label, or paste it exactly as printed."
+}
+
 private struct CodeEntryView: View {
   let submit: (String) throws(SetupCodeError) -> Void
   @State private var code = ""
   @State private var refused = false
+  @State private var camera = CameraAccess.current
+  @State private var scanning = false
+  @Environment(\.openURL) private var openURL
 
   var body: some View {
     Form {
@@ -142,16 +150,36 @@ private struct CodeEntryView: View {
           .textInputAutocapitalization(.never)
           .autocorrectionDisabled()
           .onChange(of: code) { refused = false }
-        Button("Paste") { code = UIPasteboard.general.string ?? "" }
+        HStack {
+          Button("Paste") { code = UIPasteboard.general.string ?? "" }
+          if camera != .unavailable {
+            Spacer()
+            Button("Scan QR code") { Task { await scan() } }
+          }
+        }
+        .buttonStyle(.borderless)
       } header: {
         Text("Setup code")
       } footer: {
         Text(
           refused
-            ? "That is not a setup code. Paste the whole code printed on the controller, exactly as printed."
-            : "Paste the code printed on the controller's label. It is used once to pair and is not kept."
+            ? CodeEntryMessage.refused
+            : "Scan or paste the code printed on the controller's label. It is used once to pair and is not kept."
         )
         .foregroundStyle(refused ? Palette.color(\.alarm) : .secondary)
+      }
+      if camera == .denied || camera == .restricted {
+        Section {
+          Button("Open Settings") {
+            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+          }
+        } footer: {
+          Text(
+            camera == .denied
+              ? "Camera access is off for Origin89. Turn it on in Settings to scan, or paste the code."
+              : "Camera access is restricted on this phone. Paste the code instead."
+          )
+        }
       }
       Section {
         Button("Connect") {
@@ -159,6 +187,18 @@ private struct CodeEntryView: View {
         }
         .disabled(code.isEmpty)
       }
+    }
+    .sheet(isPresented: $scanning) {
+      CodeScannerSheet(submit: submit)
+    }
+  }
+
+  private func scan() async {
+    camera = CameraAccess.current
+    if camera == .notDetermined { camera = await CameraAccess.request() }
+    if camera == .allowed {
+      refused = false
+      scanning = true
     }
   }
 }
