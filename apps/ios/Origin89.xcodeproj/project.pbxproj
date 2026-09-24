@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AB8900000000000000000001 /* Origin89UI in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000002 /* Origin89UI */; };
 		3B83354560E6B8315025217E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8E94264721F66A5291BC0C5B /* Assets.xcassets */; };
 		D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */; };
 /* End PBXBuildFile section */
@@ -16,6 +17,15 @@
 		C44C2562444042C638E2A316 /* Origin89.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Origin89.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Origin89App.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AB8900000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (AB8900000000000000000001 /* Origin89UI in Frameworks */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		C6516E3FD84BCA0F3E0309D5 /* Products */ = {
@@ -50,6 +60,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = C18D669501474EE09BEE3974 /* Build configuration list for PBXNativeTarget "Origin89" */;
 			buildPhases = (
+				AB8900000000000000000003 /* Frameworks */,
 				BA6EE36A27DDFF230128268E /* Sources */,
 				7D939A052E1C041BD9508EE5 /* Resources */,
 			);
@@ -59,6 +70,7 @@
 			);
 			name = Origin89;
 			packageProductDependencies = (
+				AB8900000000000000000002 /* Origin89UI */,
 			);
 			productName = Origin89;
 			productReference = C44C2562444042C638E2A316 /* Origin89.app */;
@@ -88,6 +100,7 @@
 			mainGroup = CAD720F6C7DC41E89646872B;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			packageReferences = (AB8900000000000000000004 /* UI */,);
 			productRefGroup = C6516E3FD84BCA0F3E0309D5 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -282,6 +295,25 @@
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AB8900000000000000000004 /* UI */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/origin89hq/ui.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AB8900000000000000000002 /* Origin89UI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB8900000000000000000004 /* UI */;
+			productName = Origin89UI;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		76CF3CF7C43B9092D1AE56EB /* Build configuration list for PBXProject "Origin89" */ = {

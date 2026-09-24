@@ -32,8 +32,19 @@ generator is needed. Add `apps/android/`, `apps/web/` and `apps/desktop/` when
 work on those applications starts. Shared TypeScript packages belong in
 `packages/` and Rust libraries in `crates/`, once they have actual consumers.
 
-Use [Origin89 UI](https://github.com/origin89hq/ui) for shared components and
-[KM43](https://github.com/origin89hq/km43) for protocol contracts when those
-features are introduced. This scaffold has no external runtime dependencies.
+## Shared UI
+
+The iOS target links `Origin89UI` through Swift Package Manager from
+[Origin89 UI](https://github.com/origin89hq/ui). Import `Origin89UI` in screens
+that use its components. The package includes native brand tokens, fonts and
+resource licenses; do not copy those assets into the app.
+
+The dependency uses the exact Swift package version `0.2.0`.
+Commit the Xcode project and `Package.resolved` together when updating it.
+Xcode resolves the dependency on first open; the initial build needs network
+access, and later builds can use the cached checkout.
+
+Use [KM43](https://github.com/origin89hq/km43) for protocol contracts when
+connection features are introduced.
 
 See [contributing](CONTRIBUTING.md) for engineering instructions and checks.
