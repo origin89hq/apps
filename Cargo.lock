@@ -95,6 +95,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -223,6 +224,7 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -349,14 +351,15 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "km43"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32405359dbb85bb683ad7c47609182b8cce0a8921e5502f3a0c90117cf1a32ad"
+checksum = "9f64bf2ba3dfc907f74c38e4aa9abcf7b117e84c1ea9f27118bfeb25aab8d84a"
 dependencies = [
  "hkdf",
  "hmac",
  "sha2",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,5 +1,4 @@
-//! The `ble` action trace in `vectors/v1.json` (km43 commit 92870a5, see
-//! `exchange.rs`), replayed against [`BleCodec`].
+//! KM43's published `ble` action trace, replayed against [`BleCodec`].
 //!
 //! The trace drives km43's sender a fragment at a time, with backpressure: a
 //! value is offered (`fragment`), offered again while the stack is busy, and
@@ -15,7 +14,7 @@ use std::sync::Arc;
 use origin89_setup::{BleCodec, BleFailure};
 use serde_json::Value;
 
-const VECTORS: &str = include_str!("vectors/v1.json");
+use km43::VECTORS_JSON as VECTORS;
 
 struct Sending {
     values: VecDeque<Vec<u8>>,
