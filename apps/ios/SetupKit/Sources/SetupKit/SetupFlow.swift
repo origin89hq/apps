@@ -246,7 +246,7 @@ import Observation
     let transport = transportFactory()
     client = try factory.client(setupCode: code, transport: transport)
     self.transport = transport
-    forgetController()
+    clearControllerState()
     resumed = false
     resume = .pair
     restorePending = true
@@ -857,7 +857,7 @@ import Observation
     transport = nil
     isConnecting = false
     client = nil
-    forgetController()
+    clearControllerState()
     resume = .pair
     restorePending = false
     resumed = false
@@ -866,7 +866,7 @@ import Observation
   }
 
   /// Drop what this flow learned about the controller it last reached.
-  private func forgetController() {
+  private func clearControllerState() {
     controller = nil
     lastDeviceID = nil
     network = nil
