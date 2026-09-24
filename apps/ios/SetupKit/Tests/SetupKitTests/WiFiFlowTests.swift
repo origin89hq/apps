@@ -151,12 +151,12 @@ private let running = NetworkScan(progress: .running, networks: nil)
 private let complete = NetworkScan(progress: .complete, networks: [cabin], unlisted: 2)
 
 @MainActor private func editing(
-  _ client: WiFiClient, _ clock: PollClock, unfinished: MemoryUnfinishedSetup? = nil
+  _ client: WiFiClient, _ clock: PollClock, lastController: MemoryLastController? = nil
 ) async throws -> (SetupFlow, Transport) {
   let transport = Transport()
   let flow = SetupFlow(
     factory: Factory(client: client), store: NoEnrolmentStore(), transportFactory: { transport },
-    clock: clock, unfinished: unfinished)
+    clock: clock, lastController: lastController)
   try flow.submitCode("valid")
   await flow.connect()
   await flow.confirmWindowOpened()
@@ -439,9 +439,9 @@ private let joined8 = WiFiStatus(
   await client.failStatuses(with: failure)
   let clock = PollClock()
   defer { clock.finish() }
-  let unfinished = MemoryUnfinishedSetup()
-  let (flow, transport) = try await editing(client, clock, unfinished: unfinished)
-  #expect(unfinished.load() == "abcd")
+  let lastController = MemoryLastController()
+  let (flow, transport) = try await editing(client, clock, lastController: lastController)
+  #expect(lastController.load() == "abcd")
   await flow.writeNetwork(
     NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
   await settle { flow.join != .waiting }
@@ -449,8 +449,8 @@ private let joined8 = WiFiStatus(
   #expect(flow.join == .connectionLost)
   #expect(flow.writtenVersion == 8)
   #expect(await transport.closes == 1)
-  // The write already ended the unfinished setup.
-  #expect(unfinished.load() == nil)
+  // A relaunch still reconnects to the controller.
+  #expect(lastController.load() == "abcd")
 }
 
 @Test @MainActor func doneFinishesAfterTheLinkIsLost() async throws {

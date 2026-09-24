@@ -133,18 +133,19 @@ public protocol ControllerClientFactory: Sendable {
     resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
   ) -> (any ControllerClient)?
 }
-/// The controller whose setup a launch left unfinished, so the next launch
-/// continues it from the kept enrolment instead of asking for the code again.
-public protocol UnfinishedSetupStore: Sendable {
+/// The controller this phone last enrolled with. The next launch reconnects to
+/// it from the kept enrolment, before and after its network is written,
+/// instead of asking for the code again.
+public protocol LastControllerStore: Sendable {
   func load() -> String?
   /// Remember `deviceID`, or forget it with nil.
   func save(_ deviceID: String?)
 }
-/// The unfinished setup in user defaults. Only the `device_id` is kept here,
+/// The last controller in user defaults. Only the `device_id` is kept here,
 /// never a key or the setup code.
-public struct DefaultsUnfinishedSetup: UnfinishedSetupStore {
+public struct DefaultsLastController: LastControllerStore {
   private let key: String
-  public init(key: String = "setup.unfinishedController") { self.key = key }
+  public init(key: String = "setup.lastController") { self.key = key }
   public func load() -> String? { UserDefaults.standard.string(forKey: key) }
   public func save(_ deviceID: String?) { UserDefaults.standard.set(deviceID, forKey: key) }
 }
