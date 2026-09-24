@@ -16,9 +16,10 @@ use km43::{
     SignedClaim, StateSeq, Tagged, Time, TimeAck, Topology, Version, Wrapper,
 };
 use origin89_setup::{
-    Engine, ErrorNote, FrameNote, HeardNetwork, JoinFailure, NetworkBand, NetworkChange,
-    NetworkScan, NetworkSecurity, NetworkSettings, NonceSource, RadioState, RadioStatus,
-    ScanProgress, ScanRefusal, SetupCode, SetupFailure, SetupSession, WifiStatus,
+    ControllerId, Engine, ErrorNote, FrameNote, HeardNetwork, JoinFailure, NetworkBand,
+    NetworkChange, NetworkScan, NetworkSecurity, NetworkSettings, NonceSource, RadioState,
+    RadioStatus, ScanProgress, ScanRefusal, SetupCode, SetupFailure, SetupSession, WifiStatus,
+    resume_session,
 };
 use serde_json::Value;
 
@@ -1782,6 +1783,105 @@ fn an_error_answering_hello_after_pairing_keeps_the_enrolment() {
     assert!(engine.is_enrolled());
     engine.reset_link();
     assert!(discover(&mut engine, &controller));
+}
+
+/// A relaunch that continues setup from the kept enrolment alone, no code.
+fn resumed(kept: &[u8]) -> Engine {
+    let device_id = text("/inputs/device_id").parse().unwrap();
+    let engine = Engine::resume(
+        device_id,
+        kept,
+        text("/inputs/label"),
+        "o89-cli 0.1.0",
+        nonces(8),
+    )
+    .expect("the kept bytes decode");
+    assert!(engine.is_enrolled());
+    engine
+}
+
+#[test]
+fn a_resumed_session_says_hello_without_the_code() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = resumed(&kept);
+    assert!(discover(&mut engine, &controller));
+    let request = engine.hello_request().unwrap();
+    engine
+        .hello_reply(&controller.hello(&request))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine.kept_enrolment().expect("proven").as_slice(),
+        kept.as_slice()
+    );
+    read_unwritten(&mut engine, &controller);
+}
+
+#[test]
+fn a_resumed_session_refused_cannot_pair() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = resumed(&kept);
+    assert!(discover(&mut engine, &controller));
+    let request = engine.hello_request().unwrap();
+    assert_eq!(
+        engine.hello_reply(&bare_error(&request)).unwrap_err(),
+        SetupFailure::EnrolmentRefused
+    );
+    assert!(!engine.is_enrolled());
+    engine.reset_link();
+    let request = engine.discover_request().unwrap();
+    assert_eq!(
+        engine
+            .discover_reply(&controller.discover(&request))
+            .unwrap_err(),
+        SetupFailure::ControllerReset,
+        "nothing left to prove with: the code has to be scanned"
+    );
+}
+
+#[test]
+fn a_resumed_session_after_a_reset_needs_the_code() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = resumed(&kept);
+    controller.epoch = Epoch::new(2).unwrap();
+    let request = engine.discover_request().unwrap();
+    assert_eq!(
+        engine
+            .discover_reply(&controller.discover(&request))
+            .unwrap_err(),
+        SetupFailure::ControllerReset
+    );
+    assert!(!engine.is_enrolled());
+}
+
+#[test]
+fn a_resumed_session_checks_the_controller() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let other = ControllerId::from([0x42; 16]);
+    let mut engine = Engine::resume(other, &kept, "label", "o89-cli 0.1.0", nonces(8)).unwrap();
+    let request = engine.discover_request().unwrap();
+    assert_eq!(
+        engine
+            .discover_reply(&controller.discover(&request))
+            .unwrap_err(),
+        SetupFailure::ControllerMismatch
+    );
+}
+
+#[test]
+fn unreadable_resume_inputs_start_nothing() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let device_id = text("/inputs/device_id");
+    assert!(resume_session(device_id, kept.clone(), "label").is_some());
+    assert!(resume_session(device_id, kept[..kept.len() - 1].to_vec(), "label").is_none());
+    assert!(resume_session(&device_id.to_uppercase(), kept.clone(), "label").is_none());
+    assert!(resume_session(&device_id[1..], kept.clone(), "label").is_none());
+    assert!(resume_session("", Vec::new(), "label").is_none());
 }
 
 #[test]

@@ -87,12 +87,16 @@ import Observation
   public private(set) var join: JoinWatch = .idle
   /// A kept enrolment could not be used, so this phone pairs again.
   public private(set) var keptEnrolmentLost = false
+  /// This launch continues a setup an earlier one left unfinished, from the
+  /// kept enrolment and without the setup code.
+  public private(set) var resumed = false
   /// The network version this session wrote, kept across Time failures.
   public var writtenVersion: UInt32? {
     if case .written(let version) = resume { version } else { nil }
   }
   private let factory: any ControllerClientFactory
   private let store: any EnrolmentStore
+  private let unfinished: (any UnfinishedSetupStore)?
   private let transportFactory: @MainActor @Sendable () -> any FrameTransport
   private let clock: any SetupClock
   private var transport: (any FrameTransport)?
@@ -112,12 +116,41 @@ import Observation
     factory: any ControllerClientFactory,
     store: any EnrolmentStore,
     transportFactory: @escaping @MainActor @Sendable () -> any FrameTransport,
-    clock: any SetupClock = SystemSetupClock()
+    clock: any SetupClock = SystemSetupClock(),
+    unfinished: (any UnfinishedSetupStore)? = nil
   ) {
     self.factory = factory
     self.store = store
     self.transportFactory = transportFactory
     self.clock = clock
+    self.unfinished = unfinished
+    resumeUnfinished()
+  }
+
+  /// Start where an earlier launch stopped: with its controller's kept
+  /// enrolment the flow waits in `connecting`, and `connect()` goes to the
+  /// network. Without one the setup code is needed, so nothing is kept.
+  private func resumeUnfinished() {
+    guard let unfinished, let deviceID = unfinished.load() else { return }
+    let transport = transportFactory()
+    guard let client = factory.client(resuming: deviceID, from: store, transport: transport) else {
+      SetupLog.flow.notice("an unfinished setup has no kept enrolment: the code is needed")
+      unfinished.save(nil)
+      return
+    }
+    SetupLog.flow.info("continuing an unfinished setup from its kept enrolment")
+    self.transport = transport
+    self.client = client
+    resume = .readNetwork
+    resumed = true
+    state = .connecting
+  }
+
+  /// Enrolled with the controller: a relaunch before the network is written
+  /// continues from here.
+  private func rememberUnfinished() {
+    guard let deviceID = controller?.deviceID else { return }
+    unfinished?.save(deviceID)
   }
 
   public func submitCode(_ code: String) throws(SetupCodeError) {
@@ -125,6 +158,7 @@ import Observation
     let transport = transportFactory()
     client = try factory.client(setupCode: code, transport: transport)
     self.transport = transport
+    resumed = false
     resume = .pair
     restorePending = true
     state = .connecting
@@ -199,6 +233,7 @@ import Observation
         return
       }
       deadlineTask?.cancel()
+      rememberUnfinished()
       resume = .readNetwork
       state = .greeting
       let report = try await client.hello()
@@ -249,6 +284,7 @@ import Observation
     switch resume {
     // A kept enrolment's first session goes on to the network, as Pair does.
     case .pair, .readNetwork:
+      rememberUnfinished()
       resume = .readNetwork
       await readNetwork()
     case .written(let version):
@@ -326,6 +362,8 @@ import Observation
     do {
       let version = try await client.writeNetwork(change, expectedVersion: settings.version)
       guard generation == operation else { return }
+      // The network is on the controller: a relaunch starts a new setup.
+      unfinished?.save(nil)
       resume = .written(version)
       state = .written(version)
       // A cleared network has nothing to join.
@@ -562,6 +600,8 @@ import Observation
     resume = .pair
     restorePending = false
     keptEnrolmentLost = false
+    resumed = false
+    unfinished?.save(nil)
     state = .enterCode
   }
 
@@ -596,7 +636,8 @@ import Observation
       target = transport is any PeerExcludingTransport ? .connecting : .enterCode
     case .enrolmentRefused:
       keptEnrolmentLost = true
-      target = .openWindow
+      // A resumed session has no setup code to pair again with.
+      target = resumed ? .enterCode : .openWindow
     case .controllerReset: target = .enterCode
     case .windowClosed, .tableFull: target = .openWindow
     case .staleVersion:
@@ -613,7 +654,10 @@ import Observation
     )
     if !keepConnection { await close() }
     state = .failed(failure, target)
-    if target == .enterCode { client = nil }
+    if target == .enterCode {
+      client = nil
+      unfinished?.save(nil)
+    }
   }
   /// The retry target once a failure's connection is gone.
   private func target(forLost failure: SetupFailure) -> RetryTarget {

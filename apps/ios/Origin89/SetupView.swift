@@ -34,6 +34,8 @@ struct SetupView: View {
       if phase == .background { Task { await flow.suspend() } }
     }
     .onDisappear { Task { await flow.suspend() } }
+    // A setup an earlier launch left unfinished starts here, in `connecting`.
+    .task { await flow.connect() }
   }
 
   @ViewBuilder private var content: some View {
@@ -44,7 +46,11 @@ struct SetupView: View {
         Task { await flow.connect() }
       }
     case .connecting:
-      Progress(title: "Connecting over Bluetooth", detail: "Keep the phone near the controller.")
+      Progress(
+        title: "Connecting over Bluetooth",
+        detail: flow.resumed
+          ? "Continuing setup with the controller this phone paired with. Keep the phone near it."
+          : "Keep the phone near the controller.")
     case .openWindow:
       OpenWindowView(keptEnrolmentLost: flow.keptEnrolmentLost) {
         windowOpenedAt = Date()
@@ -77,6 +83,11 @@ struct SetupView: View {
   /// controller's refusal is signed with the real code, so this phone cannot
   /// verify it and reports a protocol error. During pairing, say so.
   private func message(for failure: SetupFailure) -> String {
+    // Continued without the setup code, a refused pairing needs the code again.
+    if failure == .enrolmentRefused, flow.resumed {
+      return
+        "The controller no longer accepts this phone's pairing. Scan its setup code to pair again."
+    }
     if failure == .protocolError, failedDuring == .pairing {
       return
         "The controller's answer could not be verified with this setup code. Check that the code belongs to this controller and was entered exactly, then start over."

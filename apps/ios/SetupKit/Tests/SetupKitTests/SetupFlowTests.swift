@@ -101,6 +101,9 @@ private struct Factory: ControllerClientFactory {
     guard setupCode == "valid" else { throw .malformed }
     return fake
   }
+  func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? { nil }
 }
 @MainActor private final class TestClock: SetupClock {
   var now: Duration = .zero

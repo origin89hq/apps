@@ -25,6 +25,17 @@ public struct RustControllerClientFactory: ControllerClientFactory {
     }
     return RustControllerClient(session: session, transport: transport)
   }
+
+  public func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? {
+    guard var kept = store.load(deviceID: deviceID) else { return nil }
+    defer { kept.resetBytes(in: kept.startIndex..<kept.endIndex) }
+    guard
+      let session = Origin89SetupCore.resumeSession(deviceId: deviceID, kept: kept, label: label)
+    else { return nil }
+    return RustControllerClient(session: session, transport: transport)
+  }
 }
 
 /// One controller, one Rust `SetupSession`, driven over a ``FrameTransport``.

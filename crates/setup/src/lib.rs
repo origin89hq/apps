@@ -53,6 +53,28 @@ pub struct SetupSession {
     engine: Mutex<Engine>,
 }
 
+/// Continue setup with the controller `device_id` (32 lowercase hexadecimal
+/// characters) from the enrolment an earlier launch kept, without the setup
+/// code (P-222). The session greets with `Hello` and cannot pair. `None` when
+/// the identifier or the bytes do not decode; the bytes are cleared either way.
+#[uniffi::export]
+#[must_use]
+pub fn resume_session(
+    device_id: &str,
+    mut kept: Vec<u8>,
+    label: &str,
+) -> Option<Arc<SetupSession>> {
+    let engine = device_id.parse().ok().and_then(|device_id| {
+        Engine::resume(device_id, &kept, label, CLIENT_VERSION, Box::new(OsNonces))
+    });
+    kept.zeroize();
+    engine.map(|engine| {
+        Arc::new(SetupSession {
+            engine: Mutex::new(engine),
+        })
+    })
+}
+
 #[uniffi::export]
 impl SetupSession {
     /// Start a session from a scanned or pasted setup code, enrolling as
@@ -65,7 +87,7 @@ impl SetupSession {
         }))
     }
 
-    /// The `device_id` the setup code names, 32 lowercase hexadecimal characters.
+    /// The controller's `device_id`, 32 lowercase hexadecimal characters.
     pub fn device_id(&self) -> String {
         self.engine().device_id().to_string()
     }

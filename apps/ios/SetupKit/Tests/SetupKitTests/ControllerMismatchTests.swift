@@ -40,6 +40,9 @@ private struct PeerFactory: ControllerClientFactory {
   func client(setupCode: String, transport: any FrameTransport) throws(SetupCodeError)
     -> any ControllerClient
   { client }
+  func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? { nil }
 }
 /// The pairing window never closes in these tests.
 @MainActor private struct OpenWindowClock: SetupClock {
