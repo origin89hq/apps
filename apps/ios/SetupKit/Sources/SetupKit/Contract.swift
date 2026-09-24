@@ -8,6 +8,14 @@ public protocol FrameTransport: Sendable {
   func receive() async throws(TransportError) -> Data
   func close() async
 }
+/// A transport whose peers look alike until Discover. KM43 over BLE is one:
+/// the advertisement, name and address do not identify the controller.
+public protocol PeerExcludingTransport: FrameTransport {
+  /// Skip the connected peer on later opens. Call it before `close()`.
+  func excludeConnectedPeer() async
+  /// Allow every peer again.
+  func clearExcludedPeers() async
+}
 public enum SetupCodeError: Error, Sendable, Equatable { case malformed }
 public enum SetupFailure: Error, Sendable, Equatable {
   case windowClosed, wrongProof, tableFull, staleVersion, invalidConfig, controllerMismatch
@@ -25,7 +33,8 @@ public enum SetupFailure: Error, Sendable, Equatable {
     case .staleVersion: "The network settings changed. Read them again before saving."
     case .invalidConfig:
       "The controller refused these network settings. Check the fields and try again."
-    case .controllerMismatch: "This controller does not match the setup code."
+    case .controllerMismatch:
+      "Another controller answered. Move closer to the controller whose code you scanned and try again."
     case .bluetoothUnavailable:
       "Bluetooth is unavailable or the controller was not found. Check Bluetooth permission and move closer."
     case .connectionDropped: "The Bluetooth connection was lost. Reconnect to the controller."

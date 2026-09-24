@@ -10,14 +10,17 @@ final class CoreBluetoothDriver: NSObject, BluetoothDriver,
   private var central: CBCentralManager?
   private var peripheral: CBPeripheral?
   private var identifiers: BluetoothIdentifiers?
+  private var excluded: Set<UUID> = []
   private var rx: CBCharacteristic?
   private var tx: CBCharacteristic?
   var maximumWriteLength: Int { peripheral?.maximumWriteValueLength(for: .withoutResponse) ?? 0 }
   var canSend: Bool { peripheral?.canSendWriteWithoutResponse ?? false }
+  var peer: UUID? { peripheral?.identifier }
 
-  func start(identifiers: BluetoothIdentifiers) {
+  func start(identifiers: BluetoothIdentifiers, excluding: Set<UUID>) {
     disconnect()
     self.identifiers = identifiers
+    excluded = excluding
     central = CBCentralManager(delegate: self, queue: .main)
   }
   func subscribe() {
@@ -64,7 +67,8 @@ final class CoreBluetoothDriver: NSObject, BluetoothDriver,
   ) {
     guard central === self.central, self.peripheral == nil, let identifiers,
       let services = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID],
-      services.contains(CBUUID(string: identifiers.service))
+      services.contains(CBUUID(string: identifiers.service)),
+      !excluded.contains(peripheral.identifier)
     else { return }
     self.peripheral = peripheral
     peripheral.delegate = self

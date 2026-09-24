@@ -15,11 +15,10 @@ struct Origin89App: App {
   }
 }
 
-/// The label this phone enrols under. The controller lists it, and a re-pair
-/// with the same label reclaims the same row (P-078), so it is stable per
-/// install and distinct between phones: the model plus a random suffix kept
-/// in user defaults. `UIDevice.name` is not used; it is generic without an
-/// entitlement.
+/// The label this phone enrols under (see `EnrolmentLabel`). It is stable
+/// per install: the random suffix is kept in user defaults. A suffix stored by
+/// an earlier build (up to 4 hex digits) keeps working; new installs get 8.
+/// `UIDevice.name` is not used; it is generic without an entitlement.
 enum DeviceLabel {
   private static let suffixKey = "setup.labelSuffix"
 
@@ -29,9 +28,9 @@ enum DeviceLabel {
     if let stored = defaults.string(forKey: suffixKey) {
       suffix = stored
     } else {
-      suffix = String(UInt16.random(in: .min ... .max), radix: 16, uppercase: true)
+      suffix = EnrolmentLabel.suffix(UInt32.random(in: .min ... .max))
       defaults.set(suffix, forKey: suffixKey)
     }
-    return "\(UIDevice.current.model) \(suffix)"
+    return EnrolmentLabel.label(model: UIDevice.current.model, suffix: suffix)
   }
 }

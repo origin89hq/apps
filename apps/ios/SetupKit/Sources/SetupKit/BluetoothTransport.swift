@@ -19,13 +19,16 @@ enum BluetoothEvent {
   var event: ((BluetoothEvent) -> Void)? { get set }
   var maximumWriteLength: Int { get }
   var canSend: Bool { get }
-  func start(identifiers: BluetoothIdentifiers)
+  /// The connected peripheral, once a connection is attempted.
+  var peer: UUID? { get }
+  /// Scan and connect to the first advertising peripheral not in `excluding`.
+  func start(identifiers: BluetoothIdentifiers, excluding: Set<UUID>)
   func subscribe()
   func write(_ value: Data)
   func disconnect()
 }
 
-@MainActor public final class BluetoothTransport: FrameTransport {
+@MainActor public final class BluetoothTransport: PeerExcludingTransport {
   private let identifiers: BluetoothIdentifiers
   private let codec: any FragmentCodec
   private let driver: any BluetoothDriver
@@ -35,6 +38,8 @@ enum BluetoothEvent {
   private var sending = false
   private var generation = 0
   private var messages: [Data] = []
+  /// Peripherals Discover proved to be another controller in this attempt.
+  private var excluded: Set<UUID> = []
   private var opening: CheckedContinuation<Void, any Error>?
   private var reading: CheckedContinuation<Data, any Error>?
   private var writing: CheckedContinuation<Void, any Error>?
@@ -66,7 +71,7 @@ enum BluetoothEvent {
         try await withCheckedThrowingContinuation { continuation in
           opening = continuation
           openTimer = timer(error: .unreachable)
-          driver.start(identifiers: identifiers)
+          driver.start(identifiers: identifiers, excluding: excluded)
         }
       } onCancel: {
         Task { @MainActor in
@@ -126,9 +131,15 @@ enum BluetoothEvent {
     } catch { throw (error as? TransportError) ?? .dropped }
   }
   public func close() async { terminate(.dropped) }
+  public func excludeConnectedPeer() async {
+    if let peer = driver.peer { excluded.insert(peer) }
+  }
+  public func clearExcludedPeers() async { excluded.removeAll() }
   private func timer(error: TransportError) -> Task<Void, Never> {
     Task { [weak self, timeout] in
       do { try await Task.sleep(for: timeout) } catch { return }
+      // An event may have cancelled this timer after the sleep ended.
+      guard !Task.isCancelled else { return }
       self?.terminate(error)
     }
   }

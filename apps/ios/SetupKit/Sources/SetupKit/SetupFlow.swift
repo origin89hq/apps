@@ -20,8 +20,10 @@ import Observation
 /// A controller accepts at most two connections, so the flow owns the
 /// transport and holds it only while a step needs it: every path that ends
 /// or pauses setup closes it, and a reconnect closes the previous connection
-/// before opening the next. Once enrolled, a reconnect runs Discover and Hello
-/// again with the enrolment the client keeps; it never pairs twice.
+/// before opening the next. When Discover finds another controller, a
+/// transport that can exclude peers skips it and connects again. Once
+/// enrolled, a reconnect runs Discover and Hello again with the enrolment the
+/// client keeps; it never pairs twice.
 @MainActor @Observable public final class SetupFlow {
   public enum RetryTarget: Sendable, Equatable {
     case enterCode, connecting, openWindow, readingNetwork, editingNetwork
@@ -83,12 +85,14 @@ import Observation
 
   /// Open the connection. Before enrolment the next step is the pairing
   /// window; after it, a new session resumes where the last one stopped.
+  /// Every connect starts with no excluded peers.
   public func connect() async {
     guard state == .connecting, !isConnecting, let transport else { return }
     isConnecting = true
     let operation = generation
     defer { if generation == operation { isConnecting = false } }
     await closeTransport()
+    await (transport as? any PeerExcludingTransport)?.clearExcludedPeers()
     transportActive = true
     do {
       try await transport.open()
@@ -126,7 +130,7 @@ import Observation
     }
     do {
       state = .discovering
-      let discovered = try await client.discover()
+      let discovered = try await discover(client, operation)
       guard generation == operation else { return }
       controller = discovered
       state = .pairing
@@ -159,8 +163,9 @@ import Observation
     guard let client else { return }
     do {
       state = .discovering
-      controller = try await client.discover()
+      let discovered = try await discover(client, operation)
       guard generation == operation else { return }
+      controller = discovered
       state = .greeting
       try await client.hello()
       guard generation == operation else { return }
@@ -173,6 +178,46 @@ import Observation
     case .pair: state = .openWindow
     case .readNetwork: await readNetwork()
     case .written(let version): state = .written(version)
+    }
+  }
+
+  /// Discover on the open connection. The advertisement does not identify
+  /// the controller, so when another one answers, an excluding transport
+  /// skips it and connects again, one connection at a time. The open
+  /// timeout bounds the search: no other peer ends it as a mismatch.
+  private func discover(_ client: any ControllerClient, _ operation: Int) async throws(SetupFailure)
+    -> ControllerSummary
+  {
+    while true {
+      do {
+        return try await client.discover()
+      } catch {
+        guard error == .controllerMismatch, generation == operation,
+          let transport = transport as? any PeerExcludingTransport
+        else { throw error }
+        await transport.excludeConnectedPeer()
+        await client.close()
+        await closeTransport()
+        guard generation == operation else { throw error }
+        let step = state
+        state = .connecting
+        isConnecting = true
+        transportActive = true
+        do {
+          try await transport.open()
+        } catch {
+          guard generation == operation else { throw .connectionDropped }
+          isConnecting = false
+          transportActive = false
+          throw error == .unreachable ? .controllerMismatch : Self.failure(error)
+        }
+        guard generation == operation else {
+          await closeTransport()
+          throw .connectionDropped
+        }
+        isConnecting = false
+        state = step
+      }
     }
   }
 
@@ -301,7 +346,10 @@ import Observation
     case .timeRejected, .timeNeedsButton:
       target = writtenVersion.map(RetryTarget.written) ?? .connecting
       keepConnection = writtenVersion != nil
-    case .wrongProof, .controllerMismatch: target = .enterCode
+    case .wrongProof: target = .enterCode
+    case .controllerMismatch:
+      // Retrying connects again with no excluded peers.
+      target = transport is any PeerExcludingTransport ? .connecting : .enterCode
     case .windowClosed, .tableFull: target = .openWindow
     case .staleVersion:
       target = .readingNetwork

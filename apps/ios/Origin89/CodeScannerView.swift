@@ -233,6 +233,9 @@ private final class QRScannerController: UIViewController {
   private var stopped = false
   private let capture = CaptureSession()
   private var preview: AVCaptureVideoPreviewLayer?
+  /// Keeps the preview level with the horizon as the interface rotates.
+  private var rotation: AVCaptureDevice.RotationCoordinator?
+  private var rotationObservation: NSKeyValueObservation?
   private var torchOn = false
   private var zoomFactor: CGFloat = 1
 
@@ -256,6 +259,7 @@ private final class QRScannerController: UIViewController {
       guard let self, !stopped else { return }
       running = capabilities != nil
       if running {
+        followRotation()
         updateRectOfInterest()
         capture.set(torchOn: torchOn, zoomFactor: zoomFactor)
       }
@@ -279,7 +283,32 @@ private final class QRScannerController: UIViewController {
   func stop() {
     stopped = true
     running = false
+    rotationObservation?.invalidate()
+    rotationObservation = nil
+    rotation = nil
     capture.stop()
+  }
+
+  /// The preview layer does not follow interface rotation on its own. The
+  /// coordinator reports the angle that keeps the preview level.
+  private func followRotation() {
+    guard let preview, let camera = AVCaptureDevice.default(for: .video) else { return }
+    let rotation = AVCaptureDevice.RotationCoordinator(device: camera, previewLayer: preview)
+    self.rotation = rotation
+    rotationObservation = rotation.observe(
+      \.videoRotationAngleForHorizonLevelPreview, options: [.initial, .new]
+    ) { [weak self] coordinator, _ in
+      let angle = coordinator.videoRotationAngleForHorizonLevelPreview
+      Task { @MainActor in self?.rotatePreview(to: angle) }
+    }
+  }
+
+  private func rotatePreview(to angle: CGFloat) {
+    guard running, let connection = preview?.connection,
+      connection.isVideoRotationAngleSupported(angle)
+    else { return }
+    connection.videoRotationAngle = angle
+    updateRectOfInterest()
   }
 
   /// Limit detection to the bracketed square. The conversion needs a running

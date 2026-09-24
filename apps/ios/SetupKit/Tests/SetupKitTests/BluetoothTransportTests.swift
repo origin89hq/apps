@@ -4,19 +4,34 @@ import Testing
 @testable import SetupKit
 
 private let identifiers = BluetoothIdentifiers(service: "1234", rx: "1235", tx: "1236")
-@MainActor private final class FakeDriver: BluetoothDriver {
+/// Models look-alike peripherals in range: `start` connects to the first one
+/// not excluded, and a scan that finds none never reports anything.
+@MainActor final class FakeDriver: BluetoothDriver {
   var event: ((BluetoothEvent) -> Void)?
   var maximumWriteLength = 20
   var canSend = true
   var profile = BluetoothProfile(
     serviceCount: 1, rxCount: 1, txCount: 1,
     rxWritesWithoutResponse: true, txNotifies: true)
+  var peripherals = [UUID()]
+  private(set) var peer: UUID?
+  /// The exclusion set of every scan, in order.
+  private(set) var scans: [Set<UUID>] = []
+  private(set) var connections = 0
+  private(set) var mostConnections = 0
   var writes: [Data] = []
   var subscriptions = 0
   var disconnected = false
   var autoSubscribe = true
   var blockAfterWrite = false
-  func start(identifiers: BluetoothIdentifiers) { event?(.profile(profile)) }
+  func start(identifiers: BluetoothIdentifiers, excluding: Set<UUID>) {
+    scans.append(excluding)
+    guard let found = peripherals.first(where: { !excluding.contains($0) }) else { return }
+    peer = found
+    connections += 1
+    mostConnections = max(mostConnections, connections)
+    event?(.profile(profile))
+  }
   func subscribe() {
     subscriptions += 1
     if autoSubscribe { event?(.subscribed) }
@@ -25,10 +40,14 @@ private let identifiers = BluetoothIdentifiers(service: "1234", rx: "1235", tx: 
     writes.append(value)
     if blockAfterWrite { canSend = false }
   }
-  func disconnect() { disconnected = true }
+  func disconnect() {
+    disconnected = true
+    if peer != nil { connections -= 1 }
+    peer = nil
+  }
 }
 /// Test-only mutable codec state is guarded by a lock, matching the synchronous Sendable seam.
-private final class FakeCodec: FragmentCodec, @unchecked Sendable {
+final class FakeCodec: FragmentCodec, @unchecked Sendable {
   private let lock = NSLock()
   private var storage: [Data] = []
   private var resets = 0
@@ -173,3 +192,31 @@ private final class FakeCodec: FragmentCodec, @unchecked Sendable {
   await transport.close()
   #expect(driver.disconnected)
 }
+
+/// The open timer's sleep ends while the main actor is busy, and the
+/// subscription lands before the timer body runs. The stale timer must not
+/// drop the connection that just opened.
+@Test @MainActor func bluetoothTimerCancelledAfterSleepKeepsConnection() async throws {
+  let driver = FakeDriver()
+  driver.autoSubscribe = false
+  let transport = BluetoothTransport(
+    identifiers: identifiers, codec: FakeCodec(), driver: driver, timeout: .milliseconds(10))
+  let opening = Task { try await transport.open() }
+  for _ in 0..<1000 {
+    if driver.subscriptions == 1 { break }
+    await Task.yield()
+  }
+  #expect(driver.subscriptions == 1)
+  // Hold the main actor past the timeout so the timer body is queued behind it.
+  block(for: 0.1)
+  driver.event?(.subscribed)
+  try await opening.value
+  for _ in 0..<100 { await Task.yield() }
+  try await Task.sleep(for: .milliseconds(20))
+  #expect(!driver.disconnected)
+  try await transport.send(Data([1]))
+  #expect(driver.writes == [Data([1]), Data([2]), Data([3])])
+  await transport.close()
+}
+/// Blocks the calling thread without yielding, unlike `Task.sleep`.
+private func block(for seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
