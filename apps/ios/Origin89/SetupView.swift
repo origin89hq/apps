@@ -480,7 +480,7 @@ private struct WrittenView: View {
         Origin89Status("Saved", tone: .nominal)
         Text(
           flow.reportsWiFi
-            ? "The controller accepted version \(version) and passes it to its radio."
+            ? "The controller accepted version \(version) and passes it to its radio. It may drop the Bluetooth connection while it joins the network."
             : "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
         )
       }
@@ -525,6 +525,12 @@ private struct JoinSection: View {
       case .noAnswer:
         Origin89Status("No answer", tone: .warning)
         Text("The controller has not said whether it joined the network.")
+        Button("Check again") { Task { await flow.watchJoinAgain() } }
+      case .connectionLost:
+        Origin89Status("Unknown", tone: .warning)
+        Text(
+          "The Bluetooth connection ended before the controller said whether it joined. The network settings are saved."
+        )
         Button("Check again") { Task { await flow.watchJoinAgain() } }
       }
     } header: {

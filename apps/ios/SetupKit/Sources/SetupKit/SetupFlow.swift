@@ -34,7 +34,9 @@ import Observation
 /// On a controller that reports Wi-Fi (P-216) the flow also reads what its
 /// radio hears while the network is edited, and watches the join after a
 /// write. Both run in one background task that every other step stops and
-/// awaits first, so two requests never share the connection.
+/// awaits first, so two requests never share the connection. Once the write
+/// is accepted, a join watch that loses the connection leaves setup written
+/// with no verdict; it never fails the flow.
 @MainActor @Observable public final class SetupFlow {
   /// After a write, what the radio did with it.
   public enum JoinWatch: Sendable, Equatable {
@@ -43,6 +45,9 @@ import Observation
     case failed(JoinFailure)
     /// The radio gave no verdict on this write in time.
     case noAnswer
+    /// The connection ended before a verdict. The write stands; the controller
+    /// may drop Bluetooth while its radio joins.
+    case connectionLost
   }
   /// A running scan is read again this often, and given up after `scanLimit`.
   static let pollInterval: Duration = .seconds(2)
@@ -487,17 +492,28 @@ import Observation
       }
     } catch {
       guard generation == operation else { return }
-      await fail(error)
+      SetupLog.flow.notice(
+        "the join watch stopped: \(String(describing: error), privacy: .public); version \(version, privacy: .public) stays written"
+      )
+      // Before closing, so the watch never reads as idle in between.
+      join = .connectionLost
+      await close()
     }
   }
 
-  /// Watch the join of the written network again, reconnecting if needed.
+  /// Watch the join of the written network again, reconnecting if needed. A
+  /// reconnect that fails in a way a retry would reconnect from returns to
+  /// the written network with no verdict.
   public func watchJoinAgain() async {
     guard case .written(let version) = state, reportsWiFi else { return }
     if !transportActive {
       join = .waiting
       state = .connecting
       await connect()
+      if case .failed(_, .connecting) = state, writtenVersion == version {
+        state = .written(version)
+        join = .connectionLost
+      }
       return
     }
     watchJoin(version)

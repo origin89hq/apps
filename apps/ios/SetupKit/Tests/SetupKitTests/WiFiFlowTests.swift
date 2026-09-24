@@ -5,7 +5,14 @@ import Testing
 
 private actor Transport: FrameTransport {
   private(set) var closes = 0
-  func open() async throws(TransportError) {}
+  private(set) var opens = 0
+  /// Every later open fails with this, like a controller that stays away.
+  var openFailure: TransportError?
+  func failOpens(with error: TransportError?) { openFailure = error }
+  func open() async throws(TransportError) {
+    opens += 1
+    if let openFailure { throw openFailure }
+  }
   func send(_ frame: Data) async throws(TransportError) {}
   func receive() async throws(TransportError) -> Data { Data() }
   func close() async { closes += 1 }
@@ -23,6 +30,8 @@ private actor WiFiClient: ControllerClient {
   var scans: [NetworkScan]
   var statuses: [WiFiStatus]
   var scanFailure: SetupFailure?
+  var statusFailure: SetupFailure?
+  var helloFailure: SetupFailure?
   private(set) var calls: [Call] = []
   /// The next scan or status read waits for `release()`, like a reply still
   /// on its way.
@@ -43,6 +52,8 @@ private actor WiFiClient: ControllerClient {
     self.settings = settings
   }
   func failScans(with failure: SetupFailure) { scanFailure = failure }
+  func failStatuses(with failure: SetupFailure?) { statusFailure = failure }
+  func failHello(with failure: SetupFailure?) { helloFailure = failure }
   func holdNextScan() { holdScan = true }
   func holdNextStatus() { holdStatus = true }
   func release() {
@@ -63,6 +74,7 @@ private actor WiFiClient: ControllerClient {
   }
   func hello() async throws(SetupFailure) -> SessionReport {
     calls.append(.hello)
+    if let helloFailure { throw helloFailure }
     return SessionReport(reportsWiFi: reportsWiFi)
   }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
@@ -97,6 +109,7 @@ private actor WiFiClient: ControllerClient {
       await withCheckedContinuation { held = $0 }
     }
     if Task.isCancelled { throw .connectionDropped }
+    if let statusFailure { throw statusFailure }
     return statuses.count > 1 ? statuses.removeFirst() : statuses[0]
   }
   func close() async {}
@@ -137,13 +150,13 @@ private let cabin = HeardNetwork(
 private let running = NetworkScan(progress: .running, networks: nil)
 private let complete = NetworkScan(progress: .complete, networks: [cabin], unlisted: 2)
 
-@MainActor private func editing(_ client: WiFiClient, _ clock: PollClock) async throws
-  -> (SetupFlow, Transport)
-{
+@MainActor private func editing(
+  _ client: WiFiClient, _ clock: PollClock, unfinished: MemoryUnfinishedSetup? = nil
+) async throws -> (SetupFlow, Transport) {
   let transport = Transport()
   let flow = SetupFlow(
     factory: Factory(client: client), store: NoEnrolmentStore(), transportFactory: { transport },
-    clock: clock)
+    clock: clock, unfinished: unfinished)
   try flow.submitCode("valid")
   await flow.connect()
   await flow.confirmWindowOpened()
@@ -412,6 +425,105 @@ private let joinedFirst = WiFiStatus(
   #expect(await client.calls.last == .time)
   #expect(await transport.closes == 1)
   #expect(flow.join == .idle)
+}
+
+private let joining8 = WiFiStatus(section: 8, radio: (version: 8, state: .joining))
+private let joined8 = WiFiStatus(
+  section: 8, radio: (version: 8, state: .joined(address: "192.168.1.42")))
+
+/// Board A, 2026-09-24: the write landed, then the link dropped during the
+/// join watch and the app said setup stopped. The write stands instead.
+@Test(arguments: [SetupFailure.connectionDropped, .timedOut, .protocolError])
+@MainActor func aLinkLostDuringTheJoinWatchKeepsTheWrite(_ failure: SetupFailure) async throws {
+  let client = WiFiClient(statuses: [joining8])
+  await client.failStatuses(with: failure)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let unfinished = MemoryUnfinishedSetup()
+  let (flow, transport) = try await editing(client, clock, unfinished: unfinished)
+  #expect(unfinished.load() == "abcd")
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  await settle { flow.join != .waiting }
+  #expect(flow.state == .written(8))
+  #expect(flow.join == .connectionLost)
+  #expect(flow.writtenVersion == 8)
+  #expect(await transport.closes == 1)
+  // The write already ended the unfinished setup.
+  #expect(unfinished.load() == nil)
+}
+
+@Test @MainActor func doneFinishesAfterTheLinkIsLost() async throws {
+  let client = WiFiClient(statuses: [joining8])
+  await client.failStatuses(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  await settle { flow.join != .waiting }
+  await transport.failOpens(with: .unreachable)
+  await flow.finish()
+  #expect(flow.state == .finished(version: 8, timeSet: false))
+  // No reconnect and no second close.
+  #expect(await transport.opens == 1)
+  #expect(await transport.closes == 1)
+}
+
+@Test @MainActor func checkAgainReconnectsAndReadsTheJoin() async throws {
+  let client = WiFiClient(statuses: [joined8])
+  await client.failStatuses(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  await settle { flow.join != .waiting }
+  #expect(flow.join == .connectionLost)
+  await client.failStatuses(with: nil)
+  await flow.watchJoinAgain()
+  #expect(flow.state == .written(8))
+  await settle { flow.join != .waiting }
+  #expect(flow.join == .joined(address: "192.168.1.42"))
+  #expect(await transport.opens == 2)
+  // A new session, then the status, with no second read or write.
+  #expect(await client.calls.suffix(3) == [.discover, .hello, .status])
+  #expect(await client.calls.filter { $0 == .write }.count == 1)
+}
+
+@Test(arguments: [TransportError.unreachable, .timedOut, .dropped])
+@MainActor func aCheckAgainThatCannotReconnectStaysWritten(_ error: TransportError) async throws {
+  let client = WiFiClient(statuses: [joining8])
+  await client.failStatuses(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, transport) = try await editing(client, clock)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  await settle { flow.join != .waiting }
+  await transport.failOpens(with: error)
+  await flow.watchJoinAgain()
+  #expect(flow.state == .written(8))
+  #expect(flow.join == .connectionLost)
+  #expect(await transport.opens == 2)
+  await flow.finish()
+  #expect(flow.state == .finished(version: 8, timeSet: false))
+}
+
+/// A refused enrolment needs the pairing window, which the written screen
+/// cannot offer: that failure still stops setup.
+@Test @MainActor func aRefusedEnrolmentOnCheckAgainStillStops() async throws {
+  let client = WiFiClient(statuses: [joining8])
+  await client.failStatuses(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, _) = try await editing(client, clock)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  await settle { flow.join != .waiting }
+  await client.failHello(with: .enrolmentRefused)
+  await flow.watchJoinAgain()
+  #expect(flow.state == .failed(.enrolmentRefused, .openWindow))
 }
 
 @Test func signalBars() {
