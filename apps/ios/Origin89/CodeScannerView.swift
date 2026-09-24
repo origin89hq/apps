@@ -60,7 +60,8 @@ struct ScannerCard: View {
   var body: some View {
     CameraCard {
       if failed {
-        CardMessage(text: "The camera could not start. Enter the code manually instead.")
+        CardMessage(
+          text: "The camera could not start. Enter the code manually instead.", tone: .alarm)
       } else {
         ZStack {
           QRCameraView(
@@ -83,11 +84,7 @@ struct ScannerCard: View {
   private var overlays: some View {
     VStack {
       if refused {
-        Text(CodeEntryMessage.refused)
-          .font(.origin89Label)
-          .foregroundStyle(Color.origin89.onFill)
-          .padding(12)
-          .background(Color.origin89.alarmDeep, in: RoundedRectangle(cornerRadius: 12))
+        Origin89Notice(CodeEntryMessage.refused, tone: .alarm)
           .padding(12)
           .transition(.opacity)
       }
@@ -138,6 +135,7 @@ struct CameraCard<Content: View>: View {
 /// Text shown in the card in place of the camera.
 struct CardMessage<Actions: View>: View {
   let text: String
+  var tone: Origin89NoticeTone = .info
   @ViewBuilder let actions: () -> Actions
 
   var body: some View {
@@ -146,9 +144,7 @@ struct CardMessage<Actions: View>: View {
         .font(.largeTitle)
         .foregroundStyle(Color.origin89.muted)
         .accessibilityHidden(true)
-      Text(text)
-        .multilineTextAlignment(.center)
-        .foregroundStyle(Color.origin89.onFill)
+      Origin89Notice(text, tone: tone)
       actions()
     }
     .padding(24)
@@ -157,7 +153,9 @@ struct CardMessage<Actions: View>: View {
 }
 
 extension CardMessage where Actions == EmptyView {
-  init(text: String) { self.init(text: text) { EmptyView() } }
+  init(text: String, tone: Origin89NoticeTone = .info) {
+    self.init(text: text, tone: tone) { EmptyView() }
+  }
 }
 
 private struct CornerBrackets: Shape {

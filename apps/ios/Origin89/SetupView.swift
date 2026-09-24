@@ -108,9 +108,10 @@ private struct Progress: View {
   var body: some View {
     SetupPage {
       VStack(spacing: 16) {
-        ProgressView()
         Heading(text: title)
-        if let detail { Text(detail).foregroundStyle(.secondary) }
+        Origin89Status("In progress", tone: .info)
+        Origin89Loading(title)
+        if let detail { Origin89Notice(detail) }
       }
       .multilineTextAlignment(.center)
       .padding()
@@ -314,12 +315,11 @@ private struct CodeEntryView: View {
         .accessibilityLabel("Dismiss")
       }
       Text("Can't scan the code?").font(.headline)
-      Text(
+      Origin89Notice(
         hasTorch
           ? "Try turning on the flashlight for a better scan, or hold the phone a little farther from the label."
           : "Make sure the label is well lit, and hold the phone a little farther from it."
       )
-      .foregroundStyle(Color.origin89.muted)
       ViewThatFits(in: .horizontal) {
         HStack {
           Spacer()
@@ -377,12 +377,13 @@ private struct CodeEntryView: View {
     } header: {
       Text("Setup code")
     } footer: {
-      Text(
-        refused
-          ? CodeEntryMessage.refused
-          : "Paste the code printed on the controller's label. It is used once to pair and is not kept."
-      )
-      .foregroundStyle(refused ? Color.origin89.alarm : .secondary)
+      if refused {
+        Origin89Notice(CodeEntryMessage.refused, tone: .alarm)
+      } else {
+        Origin89Notice(
+          "Paste the code printed on the controller's label. It is used once to pair and is not kept."
+        )
+      }
     }
     Section {
       Button("Connect") {
@@ -399,7 +400,7 @@ private struct OpenWindowView: View {
     SetupPage {
       VStack(alignment: .leading, spacing: 16) {
         Heading(text: "Open the pairing window")
-        Text(
+        Origin89Notice(
           "Press the pairing button on the controller's panel. The window stays open for 120 seconds, and pairing must finish inside it."
         )
         Button("The window is open, pair now", action: opened)
@@ -445,14 +446,12 @@ private struct Step: View {
   let done: Bool
   let active: Bool
   var body: some View {
-    HStack(spacing: 12) {
-      if active {
-        ProgressView()
-      } else {
-        Image(systemName: done ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(done ? Color.origin89.nominal : Color.origin89.faint)
-      }
+    VStack(alignment: .leading, spacing: 8) {
       Text(title).foregroundStyle(done || active ? Color.origin89.fg : Color.origin89.muted)
+      Origin89Status(
+        done ? "Done" : active ? "In progress" : "Waiting",
+        tone: done ? .nominal : active ? .info : .faint)
+      if active { Origin89Loading(title) }
     }
   }
 }
@@ -464,8 +463,8 @@ private struct WrittenView: View {
   var body: some View {
     Form {
       Section {
-        Label("Network settings saved", systemImage: "checkmark.circle.fill")
-          .foregroundStyle(Color.origin89.nominal)
+        Text("Network settings saved")
+        Origin89Status("Saved", tone: .nominal)
         Text(
           "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
         )
@@ -491,9 +490,8 @@ private struct FinishedView: View {
   var body: some View {
     SetupPage {
       VStack(alignment: .leading, spacing: 16) {
-        Label("Setup finished", systemImage: "checkmark.circle.fill")
-          .font(.origin89Value)
-          .foregroundStyle(Color.origin89.nominal)
+        Heading(text: "Setup finished")
+        Origin89Status("Finished", tone: .nominal)
         Text("Network settings version \(version) are on the controller.")
         if timeSet { Text("The controller's clock was set from this phone.") }
         Text("This phone has disconnected from the controller.")
@@ -514,10 +512,8 @@ private struct FailureView: View {
   var body: some View {
     SetupPage {
       VStack(alignment: .leading, spacing: 16) {
-        Label("Setup stopped", systemImage: "exclamationmark.triangle.fill")
-          .font(.origin89Value)
-          .foregroundStyle(Color.origin89.alarm)
-        Text(message)
+        Heading(text: "Setup stopped")
+        Origin89Notice(message, tone: .alarm)
         HStack {
           Button("Try again", action: retry).buttonStyle(.borderedProminent)
           Button("Start over", action: startOver).buttonStyle(.bordered)
