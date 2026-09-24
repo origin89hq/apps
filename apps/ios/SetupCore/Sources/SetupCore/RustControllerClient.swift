@@ -1,6 +1,7 @@
 import Foundation
 import Origin89SetupCore
 import SetupKit
+import os
 
 /// Builds a ``SetupKit/ControllerClient`` over the Rust KM43 core. Keys, the
 /// printed secret and the session stay in Rust; this side moves frames, and
@@ -30,6 +31,8 @@ public struct RustControllerClientFactory: ControllerClientFactory {
 actor RustControllerClient: ControllerClient {
   /// Frames that answer nothing outstanding (P-024) before a step gives up.
   private static let ignoredFrameLimit = 16
+  /// Message types, `req_id`s, outcomes and error codes; never a payload.
+  private static let log = Logger(subsystem: SetupLog.subsystem, category: "km43")
 
   private let session: Origin89SetupCore.SetupSession
   private let transport: any FrameTransport
@@ -126,18 +129,59 @@ actor RustControllerClient: ControllerClient {
     _ request: () throws -> Data, _ reply: (Data) throws -> Reply?
   ) async throws(SetupKit.SetupFailure) -> Reply {
     let frame: Data
-    do { frame = try request() } catch { throw Self.failure(error) }
-    do { try await transport.send(frame) } catch { throw Self.failure(error) }
+    do { frame = try request() } catch {
+      let failure = Self.failure(error)
+      Self.log.error("not sent: \(String(describing: failure), privacy: .public)")
+      throw failure
+    }
+    let sent = Self.label(session.frameNote(frame: frame))
+    Self.log.info("send \(sent, privacy: .public)")
+    do { try await transport.send(frame) } catch {
+      let failure = Self.failure(error)
+      Self.log.error(
+        "send \(sent, privacy: .public) failed: \(String(describing: failure), privacy: .public)")
+      throw failure
+    }
     for _ in 0...Self.ignoredFrameLimit {
       let incoming: Data
-      do { incoming = try await transport.receive() } catch { throw Self.failure(error) }
+      do { incoming = try await transport.receive() } catch {
+        let failure = Self.failure(error)
+        Self.log.error(
+          "no answer to \(sent, privacy: .public): \(String(describing: failure), privacy: .public)"
+        )
+        throw failure
+      }
+      // Noted before judging: a failure ends the session and its key.
+      let received = Self.label(session.frameNote(frame: incoming))
       do {
-        if let answer = try reply(incoming) { return answer }
+        if let answer = try reply(incoming) {
+          Self.log.info("received \(received, privacy: .public): accepted")
+          return answer
+        }
+        Self.log.debug("received \(received, privacy: .public): answers nothing outstanding")
       } catch {
-        throw Self.failure(error)
+        let failure = Self.failure(error)
+        Self.log.error(
+          "received \(received, privacy: .public): \(String(describing: failure), privacy: .public)"
+        )
+        throw failure
       }
     }
+    Self.log.error(
+      "no answer to \(sent, privacy: .public) among \(Self.ignoredFrameLimit + 1) frames")
     throw .protocolError
+  }
+
+  /// A frame's type and `req_id`, and an `Error`'s code, for the log.
+  static func label(_ note: FrameNote?) -> String {
+    guard let note else { return "an unreadable frame" }
+    let head = "\(note.kind) req \(note.reqId)"
+    switch note.error {
+    case nil: return head
+    case .verified(let code): return "\(head) code \(code)"
+    case .bare(let code): return "\(head) code \(code) (bare, unauthenticated)"
+    case .unreadable: return "\(head) code unreadable"
+    }
   }
 
   static func progress(_ progress: Origin89SetupCore.ScanProgress) -> SetupKit.ScanProgress {

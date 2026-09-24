@@ -28,6 +28,21 @@ enum BluetoothEvent {
   func disconnect()
 }
 
+/// Why the transport ended a connection, for the log.
+enum TransportEnd: String {
+  case closedByFlow = "closed by the setup flow"
+  case openTimedOut = "no subscribed peripheral before the open timeout"
+  case readTimedOut = "no reply before the read timeout"
+  case writeTimedOut = "the peripheral took no write before the write timeout"
+  case cancelled = "the request waiting on it was cancelled"
+  case profileMismatch = "the GATT profile is not KM43's"
+  case unavailable = "Bluetooth or the peripheral is unavailable"
+  case peerDisconnected = "the link went down"
+  case badFragment = "a fragment did not reassemble"
+  case backlog = "too many unread messages"
+  case sendRefused = "a frame could not be sent"
+}
+
 @MainActor public final class BluetoothTransport: PeerExcludingTransport {
   private let identifiers: BluetoothIdentifiers
   private let codec: any FragmentCodec
@@ -70,12 +85,12 @@ enum BluetoothEvent {
       try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { continuation in
           opening = continuation
-          openTimer = timer(error: .unreachable)
+          openTimer = timer(error: .unreachable, .openTimedOut)
           driver.start(identifiers: identifiers, excluding: excluded)
         }
       } onCancel: {
         Task { @MainActor in
-          if self.generation == operation { self.terminate(.dropped) }
+          if self.generation == operation { self.terminate(.dropped, .cancelled) }
         }
       }
     } catch { throw (error as? TransportError) ?? .unreachable }
@@ -94,11 +109,11 @@ enum BluetoothEvent {
           try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
               writing = continuation
-              writeTimer = timer(error: .timedOut)
+              writeTimer = timer(error: .timedOut, .writeTimedOut)
             }
           } onCancel: {
             Task { @MainActor in
-              if self.generation == operation { self.terminate(.dropped) }
+              if self.generation == operation { self.terminate(.dropped, .cancelled) }
             }
           }
         }
@@ -109,7 +124,9 @@ enum BluetoothEvent {
         driver.write(fragment)
       }
     } catch {
-      if generation == operation { terminate((error as? TransportError) ?? .dropped) }
+      if generation == operation {
+        terminate((error as? TransportError) ?? .dropped, .sendRefused)
+      }
       throw (error as? TransportError) ?? .dropped
     }
   }
@@ -121,26 +138,26 @@ enum BluetoothEvent {
       return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { continuation in
           reading = continuation
-          readTimer = timer(error: .timedOut)
+          readTimer = timer(error: .timedOut, .readTimedOut)
         }
       } onCancel: {
         Task { @MainActor in
-          if self.generation == operation { self.terminate(.dropped) }
+          if self.generation == operation { self.terminate(.dropped, .cancelled) }
         }
       }
     } catch { throw (error as? TransportError) ?? .dropped }
   }
-  public func close() async { terminate(.dropped) }
+  public func close() async { terminate(.dropped, .closedByFlow) }
   public func excludeConnectedPeer() async {
     if let peer = driver.peer { excluded.insert(peer) }
   }
   public func clearExcludedPeers() async { excluded.removeAll() }
-  private func timer(error: TransportError) -> Task<Void, Never> {
+  private func timer(error: TransportError, _ end: TransportEnd) -> Task<Void, Never> {
     Task { [weak self, timeout] in
       do { try await Task.sleep(for: timeout) } catch { return }
       // An event may have cancelled this timer after the sleep ended.
       guard !Task.isCancelled else { return }
-      self?.terminate(error)
+      self?.terminate(error, end)
     }
   }
   private func handle(_ event: BluetoothEvent) {
@@ -150,7 +167,7 @@ enum BluetoothEvent {
       guard profile.serviceCount == 1, profile.rxCount == 1, profile.txCount == 1,
         profile.rxWritesWithoutResponse, profile.txNotifies
       else {
-        terminate(.unreachable)
+        terminate(.unreachable, .profileMismatch)
         return
       }
       subscribing = true
@@ -175,24 +192,34 @@ enum BluetoothEvent {
             reading.resume(returning: message)
           } else {
             guard messages.count < 8 else {
-              terminate(.dropped)
+              terminate(.dropped, .backlog)
               return
             }
             messages.append(message)
           }
         }
-      } catch { terminate(.dropped) }
+      } catch { terminate(.dropped, .badFragment) }
     case .writable:
       guard connected, driver.canSend else { return }
       writeTimer?.cancel()
       writeTimer = nil
       writing?.resume()
       writing = nil
-    case .unavailable: terminate(.unreachable)
-    case .disconnected: terminate(opening == nil ? .dropped : .unreachable)
+    case .unavailable: terminate(.unreachable, .unavailable)
+    case .disconnected: terminate(opening == nil ? .dropped : .unreachable, .peerDisconnected)
     }
   }
-  private func terminate(_ error: TransportError) {
+  private func terminate(_ error: TransportError, _ end: TransportEnd) {
+    if connected || opening != nil {
+      let phase = connected ? "connection" : "open"
+      if end == .closedByFlow {
+        SetupLog.bluetooth.info(
+          "\(phase, privacy: .public) ended: \(end.rawValue, privacy: .public)")
+      } else {
+        SetupLog.bluetooth.error(
+          "\(phase, privacy: .public) ended: \(end.rawValue, privacy: .public)")
+      }
+    }
     generation += 1
     connected = false
     subscribing = false

@@ -16,9 +16,9 @@ use km43::{
     SignedClaim, StateSeq, Tagged, Time, TimeAck, Topology, Version, Wrapper,
 };
 use origin89_setup::{
-    Engine, HeardNetwork, JoinFailure, NetworkBand, NetworkChange, NetworkScan, NetworkSecurity,
-    NetworkSettings, NonceSource, RadioState, RadioStatus, ScanProgress, ScanRefusal, SetupCode,
-    SetupFailure, SetupSession, WifiStatus,
+    Engine, ErrorNote, FrameNote, HeardNetwork, JoinFailure, NetworkBand, NetworkChange,
+    NetworkScan, NetworkSecurity, NetworkSettings, NonceSource, RadioState, RadioStatus,
+    ScanProgress, ScanRefusal, SetupCode, SetupFailure, SetupSession, WifiStatus,
 };
 use serde_json::Value;
 
@@ -1100,6 +1100,124 @@ fn the_published_wrapped_error_verifies_only_under_its_session() {
         engine.read_network_reply(&frame[..len]).unwrap_err(),
         SetupFailure::ConnectionDropped
     );
+}
+
+/// An `Error 0xFF` answering `req`, bare or wrapped under `controller`'s key.
+fn error_frame(controller: &Controller, req: ReqId, code: ErrorCode, wrapped: bool) -> Vec<u8> {
+    let body = ErrorBody {
+        code: Incoming::Client(code),
+        detail: "refused",
+    };
+    let mut frame = buffer();
+    if wrapped {
+        let len = body.encode(&mut frame).unwrap();
+        return controller.reply(MessageType::ErrorResponse, req, &frame[..len]);
+    }
+    let len = body
+        .write(
+            Controller::header(MessageType::ErrorResponse, req),
+            &mut frame,
+        )
+        .unwrap();
+    finished(frame, len)
+}
+
+#[test]
+fn a_note_names_a_frame_and_judges_nothing() {
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    open_session(&mut engine, &mut controller, b16("/inputs/next_challenge"));
+    let request = engine.read_network_request().unwrap();
+    let req = req_of(&request);
+    assert_eq!(
+        engine.frame_note(&request),
+        Some(FrameNote {
+            kind: "GetConfig".to_owned(),
+            req_id: req.0,
+            error: None,
+        })
+    );
+    let error = error_frame(&controller, req, ErrorCode::SessionExpired, true);
+    assert_eq!(
+        engine.frame_note(&error),
+        Some(FrameNote {
+            kind: "ErrorResponse".to_owned(),
+            req_id: req.0,
+            error: Some(ErrorNote::Verified {
+                code: "SessionExpired".to_owned()
+            }),
+        })
+    );
+    // Noting the Error left GetConfig outstanding: its answer is still taken.
+    let answer = controller.reply(
+        MessageType::GetConfigResponse,
+        req,
+        &config_payload(0, None),
+    );
+    assert_eq!(
+        engine.frame_note(&answer).map(|note| note.kind),
+        Some("GetConfigResponse".to_owned())
+    );
+    assert_eq!(
+        engine.read_network_reply(&answer).unwrap().unwrap().version,
+        0
+    );
+}
+
+#[test]
+fn a_bare_error_is_noted_as_a_hint() {
+    // Before a session there is no key, and a bare Error is all that can come.
+    let mut engine = engine();
+    let controller = Controller::new();
+    let request = engine.discover_request().unwrap();
+    let error = error_frame(
+        &controller,
+        req_of(&request),
+        ErrorCode::ChallengeUnavailable,
+        false,
+    );
+    assert_eq!(
+        engine.frame_note(&error).and_then(|note| note.error),
+        Some(ErrorNote::Bare {
+            code: "ChallengeUnavailable".to_owned()
+        })
+    );
+}
+
+#[test]
+fn an_error_under_another_key_is_unreadable() {
+    // The published wrapped Error, for a session this link did not open.
+    let mut engine = engine();
+    let mut controller = Controller::new();
+    open_session(&mut engine, &mut controller, b16("/inputs/next_challenge"));
+    let request = engine.read_network_request().unwrap();
+    let body = bytes("/macs/error_response/full_body_cbor");
+    let mut frame = buffer();
+    let mut cbor = CborWriter::new(&mut frame);
+    cbor.array(4).unwrap();
+    cbor.u64(0xff).unwrap();
+    cbor.u64(u64::from(HANDLE)).unwrap();
+    cbor.u64(u64::from(req_of(&request).0)).unwrap();
+    cbor.raw(&body).unwrap();
+    let len = cbor.finish().unwrap();
+    let error = finished(frame, len);
+    assert_eq!(
+        engine.frame_note(&error).and_then(|note| note.error),
+        Some(ErrorNote::Unreadable)
+    );
+    // A wrapped Error with no session on the link cannot be read either.
+    let fresh = self::engine();
+    assert_eq!(
+        fresh.frame_note(&error).and_then(|note| note.error),
+        Some(ErrorNote::Unreadable)
+    );
+}
+
+#[test]
+fn bytes_that_are_no_envelope_have_no_note() {
+    let engine = engine();
+    assert_eq!(engine.frame_note(&[]), None);
+    assert_eq!(engine.frame_note(&[0xff, 0x00, 0x13]), None);
 }
 
 #[test]
