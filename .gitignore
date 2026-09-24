@@ -1,0 +1,9 @@
+/.origin89/engineering/
+/.agents/skills/origin89-*
+/.claude/skills/origin89-*
+
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
