@@ -1,0 +1,27 @@
+[package]
+name = "origin89-setup"
+version = "0.1.0"
+description = "Controller setup for the Origin89 apps: setup code, KM43 pairing and network writes, bound for Swift"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "origin89_setup"
+# `lib` for the tests, `staticlib` for the XCFramework the iOS app links.
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+km43.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+uniffi.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

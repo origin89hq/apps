@@ -7,3 +7,11 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Rust and the iOS core build (scripts/build-ios-core.sh)
+/target/
+/build/
+/apps/ios/SetupCore/Generated/
+
+# Personal signing (see apps/ios/Signing.xcconfig)
+/apps/ios/Local.xcconfig

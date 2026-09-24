@@ -1,0 +1,16 @@
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+description = "Generates the Swift bindings for origin89-setup; run by scripts/build-ios-core.sh"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Must be the same uniffi version as origin89-setup, or the generated Swift
+# disagrees with the scaffolding compiled into the library.
+uniffi = { workspace = true, features = ["cli"] }
+
+[lints]
+workspace = true

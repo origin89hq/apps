@@ -1,0 +1,5 @@
+[bindings.swift]
+# `import Origin89SetupCore` in Swift; the C side is the XCFramework's module.
+module_name = "Origin89SetupCore"
+ffi_module_name = "Origin89SetupCoreFFI"
+ffi_module_filename = "Origin89SetupCoreFFI"

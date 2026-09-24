@@ -1,0 +1,12 @@
+// Signing for a physical device stays out of the repository. Create
+// Local.xcconfig next to this file (it is gitignored) with your own values:
+//
+//   DEVELOPMENT_TEAM = <your team ID>
+//   PRODUCT_BUNDLE_IDENTIFIER = <an identifier your team can register>
+//
+// Leave the Team field under Signing & Capabilities empty: Xcode writes a value
+// set there into project.pbxproj, where it overrides this file.
+
+PRODUCT_BUNDLE_IDENTIFIER = com.origin89.apps.ios
+
+#include? "Local.xcconfig"
