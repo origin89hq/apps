@@ -43,6 +43,9 @@ import Observation
     case failed(JoinFailure)
     /// The radio gave no verdict on this write in time.
     case noAnswer
+    /// The connection went while the join was watched. The network stays
+    /// written; a controller can drop Bluetooth while its radio joins Wi-Fi.
+    case connectionLost
   }
   /// A running scan is read again this often, and given up after `scanLimit`.
   static let pollInterval: Duration = .seconds(2)
@@ -624,6 +627,25 @@ import Observation
   }
 
   private func fail(_ failure: SetupFailure) async {
+    // Once written, a link lost while the join is watched, or while
+    // reconnecting to watch it, ends the watch, not setup (#14).
+    if let version = writtenVersion, join == .waiting {
+      switch failure {
+      case .bluetoothUnavailable, .connectionDropped, .timedOut:
+        SetupLog.flow.notice(
+          "the link went while watching the join: \(String(describing: failure), privacy: .public); version \(version, privacy: .public) stays written"
+        )
+        // Set first: `close()` would otherwise pass through `.idle`.
+        join = .connectionLost
+        await close()
+        state = .written(version)
+        return
+      case .windowClosed, .wrongProof, .tableFull, .staleVersion, .invalidConfig,
+        .controllerMismatch, .enrolmentRefused, .controllerReset, .protocolError, .timeRejected,
+        .timeNeedsButton:
+        break
+      }
+    }
     let target: RetryTarget
     var keepConnection = false
     switch failure {

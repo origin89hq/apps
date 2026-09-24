@@ -5,7 +5,14 @@ import Testing
 
 private actor Transport: FrameTransport {
   private(set) var closes = 0
-  func open() async throws(TransportError) {}
+  private(set) var opens = 0
+  /// Every open fails with this, like a controller that is not answering.
+  var openFailure: TransportError?
+  func failOpens(with failure: TransportError?) { openFailure = failure }
+  func open() async throws(TransportError) {
+    if let openFailure { throw openFailure }
+    opens += 1
+  }
   func send(_ frame: Data) async throws(TransportError) {}
   func receive() async throws(TransportError) -> Data { Data() }
   func close() async { closes += 1 }
@@ -43,6 +50,9 @@ private actor WiFiClient: ControllerClient {
     self.settings = settings
   }
   func failScans(with failure: SetupFailure) { scanFailure = failure }
+  /// Status reads fail with this until cleared.
+  var statusFailure: SetupFailure?
+  func failStatuses(with failure: SetupFailure?) { statusFailure = failure }
   func holdNextScan() { holdScan = true }
   func holdNextStatus() { holdStatus = true }
   func release() {
@@ -78,7 +88,13 @@ private actor WiFiClient: ControllerClient {
   }
   /// The `expected_version` of the last write.
   private(set) var written: UInt32?
-  func setTime(_ date: Date) async throws(SetupFailure) { calls.append(.time) }
+  func setTime(_ date: Date) async throws(SetupFailure) {
+    calls.append(.time)
+    if let timeFailure { throw timeFailure }
+  }
+  var timeFailure: SetupFailure?
+  func failTime(with failure: SetupFailure) { timeFailure = failure }
+  func setStatuses(_ statuses: [WiFiStatus]) { self.statuses = statuses }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
     calls.append(.scan(refresh: refresh))
     if holdScan {
@@ -92,6 +108,7 @@ private actor WiFiClient: ControllerClient {
   }
   func wifiStatus() async throws(SetupFailure) -> WiFiStatus {
     calls.append(.status)
+    if let statusFailure { throw statusFailure }
     if holdStatus {
       holdStatus = false
       await withCheckedContinuation { held = $0 }
@@ -434,4 +451,94 @@ private let joinedFirst = WiFiStatus(
   #expect(NetworkSecurity.wpa3Personal.isJoinable)
   #expect(!NetworkSecurity.open.isJoinable)
   #expect(!NetworkSecurity.other.isJoinable)
+}
+
+private let joiningV8 = WiFiStatus(section: 8, radio: (version: 8, state: .joining))
+private let joinedV8 = WiFiStatus(
+  section: 8, radio: (version: 8, state: .joined(address: "192.168.0.180")))
+private let cabinChange = NetworkChange(
+  ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit")
+
+/// Written, then the watch's status read fails with `failure`.
+@MainActor private func writtenThenStatusFails(_ failure: SetupFailure) async throws
+  -> (SetupFlow, WiFiClient, Transport, PollClock)
+{
+  let client = WiFiClient(statuses: [joiningV8])
+  let clock = PollClock()
+  let (flow, transport) = try await editing(client, clock)
+  await client.failStatuses(with: failure)
+  await flow.writeNetwork(cabinChange)
+  await settle {
+    if case .failed = flow.state { return true }
+    return flow.join == .connectionLost
+  }
+  return (flow, client, transport, clock)
+}
+
+/// The bench failure behind #14: the link went 3 s after the write and the
+/// saved network disappeared behind "The Bluetooth connection was lost".
+@Test(arguments: [SetupFailure.connectionDropped, .timedOut, .bluetoothUnavailable])
+@MainActor func aLinkLostWhileWatchingKeepsTheNetworkWritten(failure: SetupFailure) async throws {
+  let (flow, _, transport, clock) = try await writtenThenStatusFails(failure)
+  defer { clock.finish() }
+  #expect(flow.state == .written(8))
+  #expect(flow.join == .connectionLost)
+  #expect(flow.writtenVersion == 8)
+  #expect(await transport.closes == 1)
+}
+
+/// A reply that breaks the protocol is not a lost link: setup stops as before.
+@Test @MainActor func aProtocolErrorWhileWatchingStillStops() async throws {
+  let (flow, _, _, clock) = try await writtenThenStatusFails(.protocolError)
+  defer { clock.finish() }
+  #expect(flow.state == .failed(.protocolError, .connecting))
+}
+
+@Test @MainActor func checkingAgainReconnectsAndWatchesTheJoin() async throws {
+  let (flow, client, transport, clock) = try await writtenThenStatusFails(.connectionDropped)
+  defer { clock.finish() }
+  await client.failStatuses(with: nil)
+  await client.setStatuses([joinedV8])
+  await flow.watchJoinAgain()
+  await settle { flow.join != .waiting }
+  #expect(flow.state == .written(8))
+  #expect(flow.join == .joined(address: "192.168.0.180"))
+  #expect(await transport.opens == 2)
+  // The reconnect greets again and reads no network: it goes straight to the watch.
+  let calls = await client.calls
+  #expect(calls.filter { $0 == .write }.count == 1)
+  #expect(calls.filter { $0 == .hello }.count == 2)
+}
+
+@Test @MainActor func aReconnectThatFailsKeepsTheNetworkWritten() async throws {
+  let (flow, _, transport, clock) = try await writtenThenStatusFails(.connectionDropped)
+  defer { clock.finish() }
+  await transport.failOpens(with: .unreachable)
+  await flow.watchJoinAgain()
+  #expect(flow.state == .written(8))
+  #expect(flow.join == .connectionLost)
+}
+
+@Test @MainActor func doneFinishesWithoutAConnection() async throws {
+  let (flow, client, transport, clock) = try await writtenThenStatusFails(.connectionDropped)
+  defer { clock.finish() }
+  let before = await client.calls.count
+  await flow.finish()
+  #expect(flow.state == .finished(version: 8, timeSet: false))
+  #expect(await client.calls.count == before)
+  #expect(await transport.closes == 1)
+}
+
+/// Setting the clock is something the person asked for: its lost link still
+/// shows as a failure, with retry reconnecting to the written network.
+@Test @MainActor func aLinkLostWhileSettingTheTimeStillStops() async throws {
+  let client = WiFiClient(reportsWiFi: false)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, _) = try await editing(client, clock)
+  await flow.writeNetwork(cabinChange)
+  await client.failTime(with: .connectionDropped)
+  await flow.setTime(Date(timeIntervalSince1970: 1_700_000_000))
+  #expect(flow.state == .failed(.connectionDropped, .connecting))
+  #expect(flow.writtenVersion == 8)
 }

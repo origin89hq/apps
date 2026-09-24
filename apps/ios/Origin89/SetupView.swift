@@ -526,6 +526,12 @@ private struct JoinSection: View {
         Origin89Status("No answer", tone: .warning)
         Text("The controller has not said whether it joined the network.")
         Button("Check again") { Task { await flow.watchJoinAgain() } }
+      case .connectionLost:
+        Origin89Status("Not confirmed", tone: .warning)
+        Text(
+          "The network is saved. The controller stopped answering over Bluetooth, which can happen while it joins Wi-Fi."
+        )
+        Button("Check again") { Task { await flow.watchJoinAgain() } }
       }
     } header: {
       Text("Wi-Fi")
