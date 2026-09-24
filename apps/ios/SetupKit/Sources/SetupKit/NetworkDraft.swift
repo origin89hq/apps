@@ -6,7 +6,9 @@ public struct NetworkSuggestion: Sendable, Equatable, Identifiable {
   public var ssid: String
   public var onController: Bool
   public var onPhone: Bool
-  public var id: String { ssid }
+  /// The SSID's bytes: `String` equality would merge canonically equivalent
+  /// names that `list` keeps apart.
+  public var id: [UInt8] { Array(ssid.utf8) }
 
   public init(ssid: String, onController: Bool, onPhone: Bool) {
     self.ssid = ssid
@@ -37,6 +39,7 @@ public struct NetworkSuggestion: Sendable, Equatable, Identifiable {
 /// bounds (P-101) and P-107. The controller still validates everything.
 public enum NetworkDraftProblem: Sendable, Equatable {
   case passphraseWithoutNetwork
+  case networkNameRequired
   case networkNameTooLong
   case passphraseRequired(ssid: String)
   case passphraseLength
@@ -48,7 +51,8 @@ public enum NetworkDraftProblem: Sendable, Equatable {
   public var isAdvanced: Bool {
     switch self {
     case .country, .hostname: true
-    case .passphraseWithoutNetwork, .networkNameTooLong, .passphraseRequired, .passphraseLength:
+    case .passphraseWithoutNetwork, .networkNameRequired, .networkNameTooLong,
+      .passphraseRequired, .passphraseLength:
       false
     }
   }
@@ -56,6 +60,7 @@ public enum NetworkDraftProblem: Sendable, Equatable {
   public var message: String {
     switch self {
     case .passphraseWithoutNetwork: "A password needs a network name."
+    case .networkNameRequired: "Enter the network name."
     case .networkNameTooLong: "The network name is longer than 32 bytes."
     case .passphraseRequired(let ssid):
       "Enter the password for \(ssid). The controller keeps a password only for the network it was given for."
@@ -67,15 +72,15 @@ public enum NetworkDraftProblem: Sendable, Equatable {
   }
 }
 
-/// What the person has entered for the network section. An empty SSID asks
-/// the controller to forget its network.
+/// What the person has entered for the network section. A nil SSID asks the
+/// controller to forget its network; an empty one is a name not typed yet.
 public struct NetworkDraft: Sendable, Equatable {
-  public var ssid: String
+  public var ssid: String?
   public var passphrase: String
   public var country: String
   public var hostname: String
 
-  public init(ssid: String, passphrase: String = "", country: String, hostname: String) {
+  public init(ssid: String?, passphrase: String = "", country: String, hostname: String) {
     self.ssid = ssid
     self.passphrase = passphrase
     self.country = country
@@ -85,7 +90,7 @@ public struct NetworkDraft: Sendable, Equatable {
   /// A draft for `ssid` that keeps the controller's country and hostname.
   /// A controller with no country takes this phone's region when it is a
   /// valid code; nothing is invented for the hostname.
-  public init(ssid: String, settings: NetworkSettings, region: String?) {
+  public init(ssid: String?, settings: NetworkSettings, region: String?) {
     let country = settings.country ?? region.flatMap { Self.isCountry($0) ? $0 : nil }
     self.init(ssid: ssid, country: country ?? "", hostname: settings.hostname ?? "")
   }
@@ -93,18 +98,21 @@ public struct NetworkDraft: Sendable, Equatable {
   /// The controller keeps its passphrase only for the network it was given
   /// for (P-107), so an empty field keeps it only when the SSID is unchanged.
   public func canKeepPassphrase(_ settings: NetworkSettings) -> Bool {
-    guard settings.passphraseSet, !ssid.isEmpty, let held = settings.ssid else { return false }
+    guard settings.passphraseSet, let ssid, !ssid.isEmpty, let held = settings.ssid else {
+      return false
+    }
     return sameBytes(ssid, held)
   }
 
   /// The first reason this draft cannot be saved, or nil.
   public func problem(against settings: NetworkSettings) -> NetworkDraftProblem? {
-    if ssid.isEmpty {
-      if !passphrase.isEmpty { return .passphraseWithoutNetwork }
-    } else {
+    if let ssid {
+      if ssid.isEmpty { return .networkNameRequired }
       if ssid.utf8.count > 32 { return .networkNameTooLong }
       if passphrase.isEmpty, !canKeepPassphrase(settings) { return .passphraseRequired(ssid: ssid) }
       if !passphrase.isEmpty, !(8...63).contains(passphrase.utf8.count) { return .passphraseLength }
+    } else if !passphrase.isEmpty {
+      return .passphraseWithoutNetwork
     }
     return advancedProblem
   }
@@ -119,7 +127,7 @@ public struct NetworkDraft: Sendable, Equatable {
 
   public var change: NetworkChange {
     NetworkChange(
-      ssid: ssid.isEmpty ? nil : ssid, passphrase: passphrase.isEmpty ? nil : passphrase,
+      ssid: ssid, passphrase: passphrase.isEmpty ? nil : passphrase,
       country: country, hostname: hostname)
   }
 

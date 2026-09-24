@@ -34,6 +34,7 @@ private let blank = NetworkSettings(
   let list = NetworkSuggestion.list(controller: "caf\u{E9}", phone: "cafe\u{301}")
   #expect(list.count == 2)
   #expect(list.map(\.onPhone) == [false, true])
+  #expect(list[0].id != list[1].id)
 }
 
 // MARK: Defaults
@@ -93,8 +94,8 @@ private let blank = NetworkSettings(
 
 // MARK: Forgetting
 
-@Test func emptySSIDForgetsTheNetwork() {
-  let draft = NetworkDraft(ssid: "", country: "CA", hostname: "unit")
+@Test func noSSIDForgetsTheNetwork() {
+  let draft = NetworkDraft(ssid: nil, country: "CA", hostname: "unit")
   #expect(draft.problem(against: held) == nil)
   #expect(
     draft.change == NetworkChange(ssid: nil, passphrase: nil, country: "CA", hostname: "unit"))
@@ -102,8 +103,16 @@ private let blank = NetworkSettings(
 }
 
 @Test func forgettingRefusesAPassphrase() {
-  let draft = NetworkDraft(ssid: "", passphrase: "password", country: "CA", hostname: "unit")
+  let draft = NetworkDraft(ssid: nil, passphrase: "password", country: "CA", hostname: "unit")
   #expect(draft.problem(against: held) == .passphraseWithoutNetwork)
+}
+
+@Test func anUntypedNameIsRequiredNotAForget() {
+  // Other network with nothing typed must never clear the held network.
+  let draft = NetworkDraft(ssid: "", country: "CA", hostname: "unit")
+  #expect(draft.problem(against: held) == .networkNameRequired)
+  #expect(!draft.canKeepPassphrase(held))
+  #expect(!NetworkDraftProblem.networkNameRequired.isAdvanced)
 }
 
 // MARK: Advanced fields

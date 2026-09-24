@@ -133,10 +133,11 @@ private struct NetworkDetailsView: View {
     self.mode = mode
     self.settings = settings
     self.save = save
-    let ssid =
+    let ssid: String? =
       switch mode {
       case .join(let ssid): ssid
-      case .other, .forget: ""
+      case .other: ""
+      case .forget: nil
       }
     let draft = NetworkDraft(
       ssid: ssid, settings: settings, region: Locale.current.region?.identifier)
@@ -150,7 +151,7 @@ private struct NetworkDetailsView: View {
       if mode != .forget {
         Section {
           if mode == .other {
-            TextField("Network name", text: $draft.ssid)
+            TextField("Network name", text: typedName)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .focused($focus, equals: .name)
@@ -224,6 +225,10 @@ private struct NetworkDetailsView: View {
       .buttonStyle(.borderless)
       .accessibilityLabel(passwordShown ? "Hide password" : "Show password")
     }
+  }
+
+  private var typedName: Binding<String> {
+    Binding(get: { draft.ssid ?? "" }, set: { draft.ssid = $0 })
   }
 
   private var problem: NetworkDraftProblem? { draft.problem(against: settings) }
