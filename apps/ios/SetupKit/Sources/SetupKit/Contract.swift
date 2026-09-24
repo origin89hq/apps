@@ -104,6 +104,10 @@ public protocol EnrolmentStore: Sendable {
   func load(deviceID: String) -> Data?
   /// Keep `enrolment` for `deviceID`, replacing any older entry.
   func save(_ enrolment: Data, deviceID: String) throws
+  /// Remove the enrolment kept for `deviceID`. Nothing kept is not an error.
+  func remove(deviceID: String) throws
+  /// Remove every kept enrolment.
+  func removeAll() throws
 }
 public protocol ControllerClient: Sendable {
   /// Take the enrolment `store` kept for this controller, before the first
@@ -161,6 +165,8 @@ public protocol ControllerAddressStore: Sendable {
   func load(deviceID: String) -> String?
   /// Remember `address` for `deviceID`, or forget it with nil.
   func save(_ address: String?, deviceID: String)
+  /// Forget every address.
+  func removeAll()
 }
 /// Controller addresses in user defaults.
 public struct DefaultsControllerAddresses: ControllerAddressStore {
@@ -171,6 +177,12 @@ public struct DefaultsControllerAddresses: ControllerAddressStore {
   }
   public func save(_ address: String?, deviceID: String) {
     UserDefaults.standard.set(address, forKey: prefix + deviceID)
+  }
+  public func removeAll() {
+    let defaults = UserDefaults.standard
+    for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+      defaults.removeObject(forKey: key)
+    }
   }
 }
 

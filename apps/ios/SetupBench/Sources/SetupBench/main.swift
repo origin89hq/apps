@@ -83,6 +83,21 @@ struct FileEnrolmentStore: EnrolmentStore {
     try enrolment.write(to: url, options: [.atomic])
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
   }
+  func remove(deviceID: String) throws {
+    guard let url = file(deviceID) else { throw InvalidDeviceID() }
+    try removeIfPresent(url)
+  }
+  func removeAll() throws {
+    try removeIfPresent(BenchFiles.directory.appending(path: "enrolments"))
+  }
+}
+
+func removeIfPresent(_ url: URL) throws {
+  do {
+    try FileManager.default.removeItem(at: url)
+  } catch CocoaError.fileNoSuchFile {
+    // Nothing was kept.
+  }
 }
 
 /// Controller addresses as files, one per `device_id`, next to the enrolments.
@@ -104,6 +119,9 @@ struct FileControllerAddresses: ControllerAddressStore {
     try? FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try? Data(address.utf8).write(to: url, options: [.atomic])
+  }
+  func removeAll() {
+    try? removeIfPresent(BenchFiles.directory.appending(path: "addresses"))
   }
 }
 

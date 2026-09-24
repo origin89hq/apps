@@ -7,23 +7,36 @@ import Testing
 struct NoEnrolmentStore: EnrolmentStore {
   func load(deviceID: String) -> Data? { nil }
   func save(_ enrolment: Data, deviceID: String) throws {}
+  func remove(deviceID: String) throws {}
+  func removeAll() throws {}
 }
 
-/// Keeps entries in memory, or refuses every save.
+/// Keeps entries in memory, or refuses every save or removal.
 final class MemoryEnrolmentStore: EnrolmentStore, @unchecked Sendable {
   struct Refused: Error {}
   private let lock = NSLock()
   private var entries: [String: Data]
   private let refusesSaves: Bool
-  init(_ entries: [String: Data] = [:], refusesSaves: Bool = false) {
+  private let refusesRemovals: Bool
+  init(_ entries: [String: Data] = [:], refusesSaves: Bool = false, refusesRemovals: Bool = false) {
     self.entries = entries
     self.refusesSaves = refusesSaves
+    self.refusesRemovals = refusesRemovals
   }
+  var isEmpty: Bool { lock.withLock { entries.isEmpty } }
   subscript(deviceID: String) -> Data? { lock.withLock { entries[deviceID] } }
   func load(deviceID: String) -> Data? { self[deviceID] }
   func save(_ enrolment: Data, deviceID: String) throws {
     if refusesSaves { throw Refused() }
     lock.withLock { entries[deviceID] = enrolment }
+  }
+  func remove(deviceID: String) throws {
+    if refusesRemovals { throw Refused() }
+    lock.withLock { entries[deviceID] = nil }
+  }
+  func removeAll() throws {
+    if refusesRemovals { throw Refused() }
+    lock.withLock { entries.removeAll() }
   }
 }
 
@@ -338,5 +351,89 @@ private let editing = SetupFlow.State.editingNetwork(
   await flow.reset()
   #expect(flow.state == .enterCode)
   #expect(!flow.resumed)
+  #expect(lastController.load() == nil)
+}
+
+/// Issue #24: after forgetting a controller, its code pairs again instead of
+/// resuming the kept enrolment, and a relaunch does not reconnect to it.
+@Test @MainActor func aForgottenControllerPairsAgain() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept, "other": kept])
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let addresses = MemoryAddresses([KeptClient.deviceID: "192.0.2.7", "other": "192.0.2.8"])
+  let flow = SetupFlow(
+    factory: Factory(client: KeptClient(.accepts), resumed: KeptClient(.accepts, resuming: kept)),
+    store: store, transportFactory: { Transport() }, clock: OpenWindowClock(),
+    lastController: lastController, addresses: addresses)
+  await flow.connect()
+  #expect(flow.state == editing)
+  #expect(flow.knownController == KeptClient.deviceID)
+
+  try await flow.forgetController()
+  #expect(flow.state == .enterCode)
+  #expect(flow.knownController == nil)
+  #expect(store[KeptClient.deviceID] == nil)
+  #expect(store["other"] == kept)
+  #expect(addresses.load(deviceID: KeptClient.deviceID) == nil)
+  #expect(addresses.load(deviceID: "other") == "192.0.2.8")
+  #expect(lastController.load() == nil)
+
+  #expect(
+    relaunched(KeptClient(.accepts, resuming: kept), store, lastController).state == .enterCode)
+  let client = KeptClient(.accepts)
+  let next = try await connected(client, store)
+  #expect(next.state == .openWindow)
+  #expect(await client.calls.isEmpty)
+}
+
+/// A controller this session paired with is forgotten too, before a relaunch.
+@Test @MainActor func aControllerPairedThisSessionCanBeForgotten() async throws {
+  let store = MemoryEnrolmentStore()
+  let flow = try await connected(KeptClient(.accepts), store)
+  await flow.confirmWindowOpened()
+  #expect(store[KeptClient.deviceID] == KeptClient.paired)
+  try await flow.forgetController()
+  #expect(flow.state == .enterCode)
+  #expect(store.isEmpty)
+}
+
+@Test @MainActor func withNoKnownControllerForgetKeepsTheStore() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
+  let flow = SetupFlow(
+    factory: Factory(client: KeptClient(.accepts)), store: store, transportFactory: { Transport() },
+    clock: OpenWindowClock())
+  #expect(flow.knownController == nil)
+  try await flow.forgetController()
+  #expect(flow.state == .enterCode)
+  #expect(store[KeptClient.deviceID] == kept)
+}
+
+/// A store that cannot remove the enrolment reports it; the flow has still
+/// started over and closed its connection.
+@Test @MainActor func aFailedRemovalIsReported() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept], refusesRemovals: true)
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let flow = relaunched(KeptClient(.accepts, resuming: kept), store, lastController)
+  await flow.connect()
+  await #expect(throws: MemoryEnrolmentStore.Refused.self) { try await flow.forgetController() }
+  #expect(flow.state == .enterCode)
+  #expect(store[KeptClient.deviceID] == kept)
+  await #expect(throws: MemoryEnrolmentStore.Refused.self) {
+    try await flow.forgetAllControllers()
+  }
+}
+
+@Test @MainActor func forgettingAllControllersClearsEveryEnrolment() async throws {
+  let store = MemoryEnrolmentStore([KeptClient.deviceID: kept, "other": kept])
+  let lastController = MemoryLastController(KeptClient.deviceID)
+  let addresses = MemoryAddresses([KeptClient.deviceID: "192.0.2.7", "other": "192.0.2.8"])
+  let flow = SetupFlow(
+    factory: Factory(client: KeptClient(.accepts), resumed: KeptClient(.accepts, resuming: kept)),
+    store: store, transportFactory: { Transport() }, clock: OpenWindowClock(),
+    lastController: lastController, addresses: addresses)
+  #expect(flow.state == .connecting)
+  try await flow.forgetAllControllers()
+  #expect(flow.state == .enterCode)
+  #expect(store.isEmpty)
+  #expect(addresses.load(deviceID: "other") == nil)
   #expect(lastController.load() == nil)
 }

@@ -10,7 +10,14 @@ struct SetupView: View {
 
   @State private var windowOpenedAt: Date?
   @State private var failedDuring: SetupFlow.State?
+  @State private var confirming: Forget?
+  @State private var forgetFailed = false
   @Environment(\.scenePhase) private var scenePhase
+
+  private enum Forget: Identifiable {
+    case controller, all
+    var id: Self { self }
+  }
 
   var body: some View {
     NavigationStack {
@@ -18,11 +25,46 @@ struct SetupView: View {
         .navigationTitle("Set up a controller")
         .toolbar {
           if flow.state != .enterCode {
-            Button("Start over") { Task { await startOver() } }
+            ToolbarItem(placement: .primaryAction) {
+              Button("Start over") { Task { await startOver() } }
+            }
+          }
+          ToolbarItem(placement: .topBarLeading) {
+            Menu {
+              if flow.knownController != nil {
+                Button("Forget this controller", role: .destructive) { confirming = .controller }
+              }
+              Button("Forget all controllers", role: .destructive) { confirming = .all }
+            } label: {
+              Image(systemName: "ellipsis.circle")
+            }
+            .accessibilityLabel("Pairings")
           }
         }
     }
     .tint(Color.origin89.action)
+    .confirmationDialog(
+      confirming == .all ? "Forget all controllers?" : "Forget this controller?",
+      isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+      titleVisibility: .visible, presenting: confirming
+    ) { forget in
+      Button(forget == .all ? "Forget all" : "Forget", role: .destructive) {
+        Task { await self.forget(forget) }
+      }
+    } message: { forget in
+      Text(
+        forget == .all
+          ? "This phone removes every pairing it keeps. Each controller needs its setup code and pairing window again."
+          : "This phone removes its pairing with this controller. Its setup code and pairing window are needed again."
+      )
+    }
+    .alert("The pairing could not be removed", isPresented: $forgetFailed) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(
+        "Setup started over, but this phone still keeps the pairing. Try Forget all controllers."
+      )
+    }
     .onChange(of: flow.state) { old, new in
       if case .failed = new { failedDuring = old }
       switch new {
@@ -106,6 +148,19 @@ struct SetupView: View {
     failedDuring = nil
     windowOpenedAt = nil
     await flow.reset()
+  }
+
+  private func forget(_ forget: Forget) async {
+    failedDuring = nil
+    windowOpenedAt = nil
+    do {
+      switch forget {
+      case .controller: try await flow.forgetController()
+      case .all: try await flow.forgetAllControllers()
+      }
+    } catch {
+      forgetFailed = true
+    }
   }
 }
 

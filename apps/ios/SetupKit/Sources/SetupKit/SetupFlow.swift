@@ -816,6 +816,30 @@ import Observation
       if let network { state = .editingNetwork(network) }
     }
   }
+  /// The controller `forgetController()` forgets: the one this session
+  /// found, or the one a relaunch reconnects to.
+  public var knownController: String? { controller?.deviceID ?? lastDeviceID }
+
+  /// Forget the known controller: start over, then remove its kept
+  /// enrolment and address. Its setup code then pairs as a new phone would.
+  /// When the enrolment cannot be removed the error is thrown, and the flow
+  /// has still started over.
+  public func forgetController() async throws {
+    guard let deviceID = knownController else { return }
+    SetupLog.flow.notice("forgetting the controller and its kept enrolment")
+    await reset()
+    addresses?.save(nil, deviceID: deviceID)
+    try store.remove(deviceID: deviceID)
+  }
+
+  /// Forget every controller this phone kept an enrolment for.
+  public func forgetAllControllers() async throws {
+    SetupLog.flow.notice("forgetting every kept enrolment")
+    await reset()
+    addresses?.removeAll()
+    try store.removeAll()
+  }
+
   public func reset() async {
     await close()
     transport = nil

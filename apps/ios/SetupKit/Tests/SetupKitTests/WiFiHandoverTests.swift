@@ -116,6 +116,7 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
   func save(_ address: String?, deviceID: String) {
     lock.withLock { addresses[deviceID] = address }
   }
+  func removeAll() { lock.withLock { addresses.removeAll() } }
 }
 
 /// Poll sleeps pass at once.

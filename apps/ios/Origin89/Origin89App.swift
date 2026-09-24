@@ -1,16 +1,33 @@
 import SetupCore
 import SetupKit
 import SwiftUI
+import os
 
 @main
 struct Origin89App: App {
-  @State private var flow = SetupFlow(
-    factory: RustControllerClientFactory(label: DeviceLabel.current),
-    store: KeychainEnrolmentStore(),
-    transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
-    lastController: DefaultsLastController(),
-    webSocketFactory: { WebSocketTransport.km43(address: $0) },
-    addresses: DefaultsControllerAddresses())
+  @State private var flow = Self.makeFlow()
+
+  @MainActor private static func makeFlow() -> SetupFlow {
+    let store = KeychainEnrolmentStore()
+    // Keychain items outlive an app delete; user defaults do not. A launch
+    // with no label suffix yet is a new install: drop what an old one kept.
+    if DeviceLabel.isNewInstall {
+      do {
+        try store.removeAll()
+      } catch {
+        Logger(subsystem: SetupLog.subsystem, category: "flow").error(
+          "could not remove enrolments left from a previous install: \(String(describing: error), privacy: .public)"
+        )
+      }
+    }
+    return SetupFlow(
+      factory: RustControllerClientFactory(label: DeviceLabel.current),
+      store: store,
+      transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
+      lastController: DefaultsLastController(),
+      webSocketFactory: { WebSocketTransport.km43(address: $0) },
+      addresses: DefaultsControllerAddresses())
+  }
 
   var body: some Scene {
     WindowGroup {
@@ -25,6 +42,9 @@ struct Origin89App: App {
 /// `UIDevice.name` is not used; it is generic without an entitlement.
 enum DeviceLabel {
   private static let suffixKey = "setup.labelSuffix"
+
+  /// True until `current` stores this install's suffix.
+  static var isNewInstall: Bool { UserDefaults.standard.string(forKey: suffixKey) == nil }
 
   @MainActor static var current: String {
     let defaults = UserDefaults.standard
