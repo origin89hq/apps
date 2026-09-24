@@ -14,17 +14,20 @@
 		AB890000000000000000000C /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000B /* SetupView.swift */; };
 		AB890000000000000000000E /* NetworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000D /* NetworkView.swift */; };
 		AB8900000000000000000010 /* CodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000F /* CodeScannerView.swift */; };
+		AB8900000000000000000012 /* PhoneWiFi.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB8900000000000000000011 /* PhoneWiFi.swift */; };
 		D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		291B0A8141E0F76A304D6029 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		8E94264721F66A5291BC0C5B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AB890000000000000000000B /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
 		AB890000000000000000000D /* NetworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkView.swift; sourceTree = "<group>"; };
 		AB890000000000000000000F /* CodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeScannerView.swift; sourceTree = "<group>"; };
+		AB8900000000000000000011 /* PhoneWiFi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWiFi.swift; sourceTree = "<group>"; };
+		AB8900000000000000000013 /* Origin89.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Origin89.entitlements; sourceTree = "<group>"; };
 		C44C2562444042C638E2A316 /* Origin89.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Origin89.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Origin89App.swift; sourceTree = "<group>"; };
-		291B0A8141E0F76A304D6029 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -64,7 +67,9 @@
 				8E94264721F66A5291BC0C5B /* Assets.xcassets */,
 				AB890000000000000000000F /* CodeScannerView.swift */,
 				AB890000000000000000000D /* NetworkView.swift */,
+				AB8900000000000000000013 /* Origin89.entitlements */,
 				F3F7A98DBFF24BB7DFEC006E /* Origin89App.swift */,
+				AB8900000000000000000011 /* PhoneWiFi.swift */,
 				AB890000000000000000000B /* SetupView.swift */,
 			);
 			path = Origin89;
@@ -153,6 +158,7 @@
 				AB890000000000000000000C /* SetupView.swift in Sources */,
 				AB890000000000000000000E /* NetworkView.swift in Sources */,
 				AB8900000000000000000010 /* CodeScannerView.swift in Sources */,
+				AB8900000000000000000012 /* PhoneWiFi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -164,11 +170,13 @@
 			baseConfigurationReference = 291B0A8141E0F76A304D6029 /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Origin89/Origin89.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Origin89 uses your location only to read the name of the Wi-Fi network this phone is on, so you can pick it for your controller.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -187,11 +195,13 @@
 			baseConfigurationReference = 291B0A8141E0F76A304D6029 /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Origin89/Origin89.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Origin89 connects to your controller over Bluetooth to pair with it and set up its network.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Origin89 uses the camera to read the setup code on the controller's label.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Origin89 uses your location only to read the name of the Wi-Fi network this phone is on, so you can pick it for your controller.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
