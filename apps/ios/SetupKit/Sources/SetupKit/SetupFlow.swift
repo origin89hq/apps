@@ -235,11 +235,15 @@ import Observation
     lastController?.save(deviceID)
   }
 
+  /// A code is a person choosing its controller: nothing from an earlier
+  /// controller carries over, and a kept enrolment is used only when it is
+  /// for the controller the code names (P-222).
   public func submitCode(_ code: String) throws(SetupCodeError) {
     guard state == .enterCode else { return }
     let transport = transportFactory()
     client = try factory.client(setupCode: code, transport: transport)
     self.transport = transport
+    forgetController()
     resumed = false
     resume = .pair
     restorePending = true
@@ -821,19 +825,24 @@ import Observation
     transport = nil
     isConnecting = false
     client = nil
+    forgetController()
+    resume = .pair
+    restorePending = false
+    resumed = false
+    lastController?.save(nil)
+    state = .enterCode
+  }
+
+  /// Drop what this flow learned about the controller it last reached.
+  private func forgetController() {
     controller = nil
+    lastDeviceID = nil
     network = nil
     reportsWiFi = false
     scan = nil
     join = .idle
-    resume = .pair
-    restorePending = false
     keptEnrolmentLost = false
-    resumed = false
-    lastDeviceID = nil
     wifiUnavailable = nil
-    lastController?.save(nil)
-    state = .enterCode
   }
 
   /// End whatever is in flight and close the connection once.
@@ -884,7 +893,7 @@ import Observation
     case .invalidConfig:
       target = network == nil ? .openWindow : .editingNetwork
       keepConnection = network != nil
-    case .bluetoothUnavailable, .connectionDropped, .timedOut, .protocolError:
+    case .bluetoothUnavailable, .linkNotReady, .connectionDropped, .timedOut, .protocolError:
       target = .connecting
     }
     SetupLog.flow.error(
@@ -911,6 +920,7 @@ import Observation
     case .unreachable: .bluetoothUnavailable
     case .dropped: .connectionDropped
     case .timedOut: .timedOut
+    case .notReady: .linkNotReady
     // Not a Bluetooth failure; no Bluetooth transport reports it.
     case .localNetworkDenied: .connectionDropped
     }
@@ -918,13 +928,13 @@ import Observation
   private static func unavailable(_ error: TransportError) -> WiFiUnavailable {
     switch error {
     case .localNetworkDenied: .localNetworkDenied
-    case .unreachable, .dropped, .timedOut: .notReachable
+    case .unreachable, .dropped, .timedOut, .notReady: .notReachable
     }
   }
   private static func unavailable(_ failure: SetupFailure) -> WiFiUnavailable {
     switch failure {
     case .controllerMismatch: .otherController
-    case .connectionDropped, .timedOut, .bluetoothUnavailable: .notReachable
+    case .connectionDropped, .timedOut, .bluetoothUnavailable, .linkNotReady: .notReachable
     case .windowClosed, .wrongProof, .tableFull, .staleVersion, .invalidConfig, .enrolmentRefused,
       .controllerReset, .protocolError, .timeRejected, .timeNeedsButton:
       .refused

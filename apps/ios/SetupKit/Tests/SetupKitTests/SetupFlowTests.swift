@@ -281,6 +281,18 @@ private struct Factory: ControllerClientFactory {
   #expect(flow.state == .failed(.bluetoothUnavailable, .connecting))
 }
 
+/// A controller was found but its link never became ready: not reported as
+/// Bluetooth being unavailable.
+@Test @MainActor func aLinkThatIsNotReadyIsReportedAsSuch() async throws {
+  let flow = SetupFlow(
+    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
+    transportFactory: { FakeTransport(failure: .notReady) }
+  )
+  try flow.submitCode("valid")
+  await flow.connect()
+  #expect(flow.state == .failed(.linkNotReady, .connecting))
+}
+
 // MARK: - Network clear (review finding 1)
 
 @Test @MainActor func clearingAnExistingNetworkReachesTheClient() async throws {

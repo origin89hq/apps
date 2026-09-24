@@ -1858,18 +1858,40 @@ fn a_resumed_session_after_a_reset_needs_the_code() {
 }
 
 #[test]
-fn a_resumed_session_checks_the_controller() {
+fn a_resumed_session_takes_only_its_controllers_enrolment() {
     let mut controller = Controller::new();
     let kept = kept_after_pairing(&mut controller);
     let other = ControllerId::from([0x42; 16]);
-    let mut engine = Engine::resume(other, &kept, "label", "o89-cli 0.1.0", nonces(8)).unwrap();
-    let request = engine.discover_request().unwrap();
-    assert_eq!(
-        engine
-            .discover_reply(&controller.discover(&request))
-            .unwrap_err(),
-        SetupFailure::ControllerMismatch
-    );
+    assert!(Engine::resume(other, &kept, "label", "o89-cli 0.1.0", nonces(8)).is_none());
+    assert!(resume_session(&other.to_string(), kept, "label").is_none());
+}
+
+/// The setup code printed for another controller than the vectors'.
+fn other_code() -> SetupCode {
+    let payload = text("/qr/payload");
+    let other = format!("{}{}{}", &payload[..7], "42".repeat(16), &payload[39..]);
+    SetupCode::parse(&other).expect("another controller's code parses")
+}
+
+/// A code scanned for a new controller while the phone keeps an enrolment for
+/// another: the scan chose the new controller, so the engine pairs with it.
+#[test]
+fn a_code_for_another_controller_leaves_the_kept_enrolment() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut engine = Engine::new(other_code(), "label", "o89-cli 0.1.0", nonces(8));
+    assert!(!engine.restore_kept(&kept), "kept for another controller");
+    assert!(!engine.is_enrolled());
+    engine.discover_request().unwrap();
+}
+
+#[test]
+fn a_code_takes_the_enrolment_kept_for_its_controller() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    assert_ne!(code().device_id(), other_code().device_id());
+    let mut engine = relaunched(&kept);
+    assert!(discover(&mut engine, &controller));
 }
 
 #[test]

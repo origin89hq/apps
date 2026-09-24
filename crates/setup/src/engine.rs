@@ -327,7 +327,8 @@ impl Engine {
     /// Continue with the controller `device_id` from an enrolment kept by an
     /// earlier launch, without its setup code (P-222). The session greets with
     /// `Hello` and cannot pair: a reset or a refused key needs the code scanned
-    /// again. `None` when `kept` does not decode.
+    /// again. `None` when `kept` does not decode or was kept for another
+    /// controller.
     #[must_use]
     pub fn resume(
         device_id: ControllerId,
@@ -336,6 +337,9 @@ impl Engine {
         client_version: &str,
         nonces: Box<dyn NonceSource>,
     ) -> Option<Self> {
+        if !kept_for(kept, device_id) {
+            return None;
+        }
         let stored = StoredEnrolment::decode(kept).ok()?;
         Some(Self {
             device_id,
@@ -371,12 +375,13 @@ impl Engine {
     /// its `device_id` and `epoch` before `Hello` uses it (P-222); until a
     /// `Hello` succeeds the setup code stays, to pair again with.
     ///
-    /// Returns whether it was taken. Bytes that do not decode are refused, and
-    /// so is a call once this session has sent a frame; the session then pairs
-    /// as if nothing was kept.
+    /// Returns whether it was taken. Bytes that do not decode are refused, so
+    /// are bytes kept for another controller than the code names, and so is a
+    /// call once this session has sent a frame; the session then pairs as if
+    /// nothing was kept.
     pub fn restore_kept(&mut self, kept: &[u8]) -> bool {
         // `req_id` 1 is the first frame's (P-022): none has been built yet.
-        if self.next_req != 1 {
+        if self.next_req != 1 || !kept_for(kept, self.device_id) {
             return false;
         }
         let Ok(stored) = StoredEnrolment::decode(kept) else {
@@ -1300,6 +1305,15 @@ fn network_body(
     let len = write.encode(&mut body).map_err(invalid)?;
     body.truncate(len);
     Ok(body)
+}
+
+/// Whether `kept` was kept for `device_id`. A scanned code is a person
+/// choosing that controller, so an enrolment for another one is not taken in
+/// its place (P-222); Discover checks it again against the controller that
+/// answers. The `device_id` follows the format byte in km43's encoding.
+fn kept_for(kept: &[u8], device_id: ControllerId) -> bool {
+    let id = device_id.as_bytes();
+    kept.get(1..=id.len()) == Some(id.as_slice())
 }
 
 /// Cut `text` to `max` bytes without splitting a character, or `fallback` when

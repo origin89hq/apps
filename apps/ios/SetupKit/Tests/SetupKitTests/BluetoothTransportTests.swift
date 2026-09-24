@@ -160,11 +160,20 @@ final class FakeCodec: FragmentCodec, @unchecked Sendable {
   driver.autoSubscribe = false
   let transport = BluetoothTransport(
     identifiers: identifiers, codec: FakeCodec(), driver: driver, timeout: .milliseconds(10))
-  await #expect(throws: TransportError.unreachable) { try await transport.open() }
+  // Found and connected, but never subscribed: not reported as Bluetooth being off.
+  await #expect(throws: TransportError.notReady) { try await transport.open() }
   driver.autoSubscribe = true
   try await transport.open()
   await #expect(throws: TransportError.timedOut) { try await transport.receive() }
   #expect(driver.disconnected)
+}
+@Test @MainActor func bluetoothOpenThatFindsNoPeripheralIsUnreachable() async {
+  let driver = FakeDriver()
+  driver.peripherals = []
+  let transport = BluetoothTransport(
+    identifiers: identifiers, codec: FakeCodec(), driver: driver, timeout: .milliseconds(10))
+  await #expect(throws: TransportError.unreachable) { try await transport.open() }
+  #expect(driver.scans.count == 1)
 }
 
 @Test @MainActor func bluetoothDisconnectUnblocksBackpressure() async throws {
