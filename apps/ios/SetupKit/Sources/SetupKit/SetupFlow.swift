@@ -189,6 +189,9 @@ import Observation
   private var deadlineTask: Task<Void, Never>?
   /// The scan or join watch in flight, the only request not awaited in line.
   private var backgroundTask: Task<Void, Never>?
+  /// A save of the enrolment `Pair` produced. Forgetting waits for it, so a
+  /// save cannot land after the removal.
+  private var keeping: Task<Void, Never>?
 
   public init(
     factory: any ControllerClientFactory,
@@ -353,7 +356,10 @@ import Observation
   private func keep(_ client: any ControllerClient) async {
     // A phone that cannot keep it still finishes setup, and pairs again on
     // its next launch.
-    try? await client.keep(in: store)
+    let task = Task { [store] in _ = try? await client.keep(in: store) }
+    keeping = task
+    await task.value
+    if keeping == task { keeping = nil }
   }
 
   /// Discover and Hello on a new connection with the retained or kept
@@ -828,6 +834,7 @@ import Observation
     guard let deviceID = knownController else { return }
     SetupLog.flow.notice("forgetting the controller and its kept enrolment")
     await reset()
+    await keeping?.value
     addresses?.save(nil, deviceID: deviceID)
     try store.remove(deviceID: deviceID)
   }
@@ -836,6 +843,7 @@ import Observation
   public func forgetAllControllers() async throws {
     SetupLog.flow.notice("forgetting every kept enrolment")
     await reset()
+    await keeping?.value
     addresses?.removeAll()
     try store.removeAll()
   }

@@ -437,3 +437,64 @@ private let editing = SetupFlow.State.editingNetwork(
   #expect(addresses.load(deviceID: "other") == nil)
   #expect(lastController.load() == nil)
 }
+
+/// Pairs, then holds its enrolment save until released.
+private actor GatedKeepClient: ControllerClient {
+  private(set) var isKeeping = false
+  private var release: CheckedContinuation<Void, Never>?
+  func restore(from store: any EnrolmentStore) async {}
+  func isEnrolled() async -> Bool { false }
+  func keep(in store: any EnrolmentStore) async throws {
+    isKeeping = true
+    await withCheckedContinuation { release = $0 }
+    try store.save(KeptClient.paired, deviceID: KeptClient.deviceID)
+  }
+  func releaseKeep() {
+    release?.resume()
+    release = nil
+  }
+  func discover() async throws(SetupFailure) -> ControllerSummary {
+    ControllerSummary(deviceID: KeptClient.deviceID)
+  }
+  func pair() async throws(SetupFailure) {}
+  func hello() async throws(SetupFailure) -> SessionReport { SessionReport(reportsWiFi: false) }
+  func readNetwork() async throws(SetupFailure) -> NetworkSettings { throw .protocolError }
+  func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan { throw .protocolError }
+  func wifiStatus() async throws(SetupFailure) -> WiFiStatus { throw .protocolError }
+  func writeNetwork(_ change: NetworkChange, expectedVersion: UInt32) async throws(SetupFailure)
+    -> UInt32
+  { throw .protocolError }
+  func setTime(_ date: Date) async throws(SetupFailure) {}
+  func close() async {}
+}
+private struct GatedFactory: ControllerClientFactory {
+  let client: GatedKeepClient
+  func client(setupCode: String, transport: any FrameTransport) throws(SetupCodeError)
+    -> any ControllerClient
+  { client }
+  func client(
+    resuming deviceID: String, from store: any EnrolmentStore, transport: any FrameTransport
+  ) -> (any ControllerClient)? { nil }
+}
+
+/// A forget while the new enrolment is being saved waits for the save, so
+/// the enrolment does not come back after the removal.
+@Test @MainActor func forgettingDuringTheSaveRemovesTheSavedEnrolment() async throws {
+  let client = GatedKeepClient()
+  let store = MemoryEnrolmentStore()
+  let flow = SetupFlow(
+    factory: GatedFactory(client: client), store: store, transportFactory: { Transport() },
+    clock: OpenWindowClock())
+  try flow.submitCode("valid")
+  await flow.connect()
+  #expect(flow.state == .openWindow)
+  let pairing = Task { await flow.confirmWindowOpened() }
+  while await !client.isKeeping { await Task.yield() }
+  let forgetting = Task { try await flow.forgetController() }
+  for _ in 0..<50 { await Task.yield() }
+  await client.releaseKeep()
+  try await forgetting.value
+  await pairing.value
+  #expect(flow.state == .enterCode)
+  #expect(store.isEmpty)
+}

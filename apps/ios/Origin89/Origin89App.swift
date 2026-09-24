@@ -11,9 +11,15 @@ struct Origin89App: App {
     let store = KeychainEnrolmentStore()
     // Keychain items outlive an app delete; user defaults do not. A launch
     // with no label suffix yet is a new install: drop what an old one kept.
-    if DeviceLabel.isNewInstall {
+    // A failed removal is tried again on each launch until it succeeds, which
+    // then also drops any enrolment made in between.
+    let defaults = UserDefaults.standard
+    let pendingKey = "setup.clearPreviousInstall"
+    if DeviceLabel.isNewInstall { defaults.set(true, forKey: pendingKey) }
+    if defaults.bool(forKey: pendingKey) {
       do {
         try store.removeAll()
+        defaults.removeObject(forKey: pendingKey)
       } catch {
         Logger(subsystem: SetupLog.subsystem, category: "flow").error(
           "could not remove enrolments left from a previous install: \(String(describing: error), privacy: .public)"
