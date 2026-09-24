@@ -3,7 +3,8 @@ import SetupKit
 import SwiftUI
 
 /// The setup flow: scan or paste the code, connect over Bluetooth, pair inside the
-/// panel's window, then read and write the network section.
+/// panel's window, then read and write the network section. Once the controller
+/// joins the network the session moves to Wi-Fi when this phone can reach it.
 struct SetupView: View {
   let flow: SetupFlow
 
@@ -47,10 +48,12 @@ struct SetupView: View {
       }
     case .connecting:
       Progress(
-        title: "Connecting over Bluetooth",
-        detail: flow.resumed
-          ? "Reconnecting to the controller this phone paired with. Keep the phone near it."
-          : "Keep the phone near the controller.")
+        title: flow.isSwitchingToWiFi ? "Connecting over Wi-Fi" : "Connecting over Bluetooth",
+        detail: flow.isSwitchingToWiFi
+          ? "Reaching the controller on this phone's network."
+          : flow.resumed
+            ? "Reconnecting to the controller this phone paired with. Keep the phone near it."
+            : "Keep the phone near the controller.")
     case .openWindow:
       OpenWindowView(keptEnrolmentLost: flow.keptEnrolmentLost) {
         windowOpenedAt = Date()
@@ -87,6 +90,10 @@ struct SetupView: View {
     if failure == .enrolmentRefused, flow.resumed {
       return
         "The controller no longer accepts this phone's pairing. Scan its setup code to pair again."
+    }
+    // Wi-Fi was tried first and failed too: say why.
+    if failure == .bluetoothUnavailable, let wifi = flow.wifiUnavailable {
+      return "\(failure.message) \(wifi.message)"
     }
     if failure == .protocolError, failedDuring == .pairing {
       return
@@ -480,11 +487,12 @@ private struct WrittenView: View {
         Origin89Status("Saved", tone: .nominal)
         Text(
           flow.reportsWiFi
-            ? "The controller accepted version \(version) and passes it to its radio. It may drop the Bluetooth connection while it joins the network."
+            ? "The controller accepted version \(version) and passes it to its radio. It may drop the Bluetooth connection while it joins the network. Once it joins, this phone continues over Wi-Fi if it is on the same network."
             : "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
         )
       }
       if flow.reportsWiFi { JoinSection(join: flow.join, flow: flow) }
+      LinkSection(flow: flow)
       Section {
         Button("Set the controller's clock from this phone") { Task { await flow.setTime() } }
       } footer: {
@@ -492,8 +500,43 @@ private struct WrittenView: View {
       }
       Section {
         Button("Done") { Task { await flow.finish() } }
+          .disabled(flow.isSwitchingToWiFi)
       } footer: {
         Text("Ends setup and disconnects. A controller accepts only two connections at once.")
+      }
+    }
+  }
+}
+
+/// The link the session runs over, once Wi-Fi was tried: Wi-Fi, a switch in
+/// progress, or why it stays on Bluetooth with a retry.
+struct LinkSection: View {
+  let flow: SetupFlow
+
+  var body: some View {
+    if flow.isSwitchingToWiFi {
+      Section {
+        HStack(spacing: 12) {
+          ProgressView()
+          Text("Connecting over Wi-Fi…")
+        }
+      } header: {
+        Text("Connection")
+      }
+    } else if case .wifi(let address) = flow.link {
+      Section {
+        Origin89Status("Wi-Fi", tone: .nominal)
+        Text("Connected over Wi-Fi at \(address). Bluetooth is closed.")
+      } header: {
+        Text("Connection")
+      }
+    } else if flow.link == .bluetooth, let unavailable = flow.wifiUnavailable {
+      Section {
+        Origin89Status("Bluetooth", tone: .warning)
+        Origin89Notice(unavailable.message)
+        Button("Try Wi-Fi again") { Task { await flow.retryWiFi() } }
+      } header: {
+        Text("Connection")
       }
     }
   }

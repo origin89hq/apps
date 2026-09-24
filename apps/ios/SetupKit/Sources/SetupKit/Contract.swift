@@ -1,6 +1,10 @@
 import Foundation
 
-public enum TransportError: Error, Sendable, Equatable { case unreachable, dropped, timedOut }
+public enum TransportError: Error, Sendable, Equatable {
+  case unreachable, dropped, timedOut
+  /// The app may not reach the local network (a WebSocket only).
+  case localNetworkDenied
+}
 /// One KM43 message per opaque frame.
 public protocol FrameTransport: Sendable {
   func open() async throws(TransportError)
@@ -45,7 +49,7 @@ public enum SetupFailure: Error, Sendable, Equatable {
       "The controller was reset since this phone paired. Scan its setup code to pair again."
     case .bluetoothUnavailable:
       "Bluetooth is unavailable or the controller was not found. Check Bluetooth permission and move closer."
-    case .connectionDropped: "The Bluetooth connection was lost. Reconnect to the controller."
+    case .connectionDropped: "The connection to the controller was lost. Reconnect to it."
     case .timedOut: "The controller did not respond in time. Try connecting again."
     case .protocolError:
       "The controller sent an unexpected or invalid response. Reconnect to try again."
@@ -148,6 +152,26 @@ public struct DefaultsLastController: LastControllerStore {
   public init(key: String = "setup.lastController") { self.key = key }
   public func load() -> String? { UserDefaults.standard.string(forKey: key) }
   public func save(_ deviceID: String?) { UserDefaults.standard.set(deviceID, forKey: key) }
+}
+
+/// The controller's address on the site network, one per controller
+/// `device_id`, as its authenticated `WifiStatus` last reported it. A candidate
+/// only: Discover checks it before use (P-225).
+public protocol ControllerAddressStore: Sendable {
+  func load(deviceID: String) -> String?
+  /// Remember `address` for `deviceID`, or forget it with nil.
+  func save(_ address: String?, deviceID: String)
+}
+/// Controller addresses in user defaults.
+public struct DefaultsControllerAddresses: ControllerAddressStore {
+  private let prefix: String
+  public init(prefix: String = "setup.address.") { self.prefix = prefix }
+  public func load(deviceID: String) -> String? {
+    UserDefaults.standard.string(forKey: prefix + deviceID)
+  }
+  public func save(_ address: String?, deviceID: String) {
+    UserDefaults.standard.set(address, forKey: prefix + deviceID)
+  }
 }
 
 /// Implemented by the km43 Rust core. One instance per connection.

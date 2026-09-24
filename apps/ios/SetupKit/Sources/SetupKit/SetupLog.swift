@@ -6,5 +6,6 @@ import os
 public enum SetupLog {
   public static let subsystem = "com.origin89.apps"
   static let bluetooth = Logger(subsystem: subsystem, category: "bluetooth")
+  static let webSocket = Logger(subsystem: subsystem, category: "websocket")
   static let flow = Logger(subsystem: subsystem, category: "flow")
 }

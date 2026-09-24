@@ -30,3 +30,14 @@ extension SetupKit.BluetoothIdentifiers {
     return Self(service: ids.service, rx: ids.rx, tx: ids.tx)
   }
 }
+
+extension SetupKit.WebSocketTransport {
+  /// A KM43 WebSocket to a controller at `address`, as `WifiStatus` reports
+  /// it, on km43's port and path (P-223); nil when it is not an IPv4 address.
+  @MainActor public static func km43(address: String) -> WebSocketTransport? {
+    guard let text = Origin89SetupCore.webSocketUrl(ipv4: address), let url = URL(string: text)
+    else { return nil }
+    return WebSocketTransport(
+      url: url, maximumMessage: Int(Origin89SetupCore.maxMessageBytes()))
+  }
+}
