@@ -3,7 +3,9 @@
 Web, desktop and mobile applications for Origin89 controllers. The first target
 is a native iOS app in SwiftUI. It sets up a controller: scan or paste its setup
 code, connect over Bluetooth, pair inside the panel's pairing window, read and
-write the network section, and optionally set the controller's clock.
+write the network section, and optionally set the controller's clock. On a
+controller that sets `Hello` capability bit 8 it also lists the networks the
+controller's radio hears and reports whether the controller joined.
 
 ## iOS development
 
@@ -35,7 +37,8 @@ default identifier is `com.origin89.apps.ios`; its registration is not assumed.
 
 - Swift formatting lint for the app, `SetupKit` and `SetupCore`;
 - `cargo fmt --check`, Clippy with warnings denied, and `cargo test`, which
-  include the KM43 vectors for pairing, configuration and BLE fragmentation;
+  include the KM43 vectors for pairing, configuration, Wi-Fi scan and status,
+  and BLE fragmentation;
 - `swift test` for `SetupKit`, the setup flow and Bluetooth transport against fakes;
 - the Rust core build for device and simulator, and the unsigned simulator app build.
 

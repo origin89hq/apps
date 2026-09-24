@@ -19,7 +19,9 @@ import Testing
     return ControllerSummary(deviceID: "abcd")
   }
   func pair() async throws(SetupFailure) {}
-  func hello() async throws(SetupFailure) {}
+  func hello() async throws(SetupFailure) -> SessionReport { SessionReport(reportsWiFi: false) }
+  func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan { throw .protocolError }
+  func wifiStatus() async throws(SetupFailure) -> WiFiStatus { throw .protocolError }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
     NetworkSettings(version: 1, ssid: nil, passphraseSet: false, country: nil, hostname: nil)
   }

@@ -2,14 +2,14 @@ import Origin89UI
 import SetupKit
 import SwiftUI
 
-/// Choose the network the controller joins, then enter its password. The
-/// controller cannot scan yet (origin89hq/km43#110), so the list holds only
-/// the networks the controller and this phone already know, and any other
-/// is typed. The passphrase is never shown: the controller only says whether
-/// one is held (P-106).
+/// Choose the network the controller joins, then enter its password. On a
+/// controller that reports Wi-Fi (P-216) the list is what its radio hears;
+/// otherwise it holds the networks the controller and this phone already
+/// know. Any other network is typed. The passphrase is never shown: the
+/// controller only says whether one is held (P-106).
 struct NetworkView: View {
   let settings: NetworkSettings
-  let save: (NetworkChange) -> Void
+  let flow: SetupFlow
 
   @State private var phoneSSID: String?
   @State private var destination: Destination?
@@ -24,18 +24,50 @@ struct NetworkView: View {
       Section {
         Header(
           title: "Choose the Wi-Fi network your controller should use.",
-          detail: "Networks this phone or the controller already know are listed here.")
+          detail: flow.reportsWiFi
+            ? "These are the networks the controller can hear."
+            : "Networks this phone or the controller already know are listed here.")
       }
-      Section {
-        ForEach(NetworkSuggestion.list(controller: settings.ssid, phone: phoneSSID)) {
-          suggestion in
-          Button {
-            destination = .join(suggestion.ssid)
-          } label: {
-            SuggestionRow(suggestion: suggestion, passphraseSet: settings.passphraseSet)
+      if flow.reportsWiFi, let heard = flow.scan?.networks {
+        Section {
+          ForEach(heard) { network in
+            Button {
+              destination = .join(network.ssid)
+            } label: {
+              HeardRow(
+                network: network, saved: same(network.ssid, settings.ssid),
+                onPhone: same(network.ssid, phoneSSID))
+            }
+            .disabled(!network.security.isJoinable)
           }
+          Button("Other network…") { destination = .other }
+        } header: {
+          scanHeader
+        } footer: {
+          if let scanNote { Text(scanNote) }
         }
-        Button("Other network…") { destination = .other }
+      } else {
+        Section {
+          ForEach(NetworkSuggestion.list(controller: settings.ssid, phone: phoneSSID)) {
+            suggestion in
+            Button {
+              destination = .join(suggestion.ssid)
+            } label: {
+              SuggestionRow(suggestion: suggestion, passphraseSet: settings.passphraseSet)
+            }
+          }
+          if flow.isScanning {
+            HStack {
+              ProgressView()
+              Text("Looking for networks…").foregroundStyle(Color.origin89.muted)
+            }
+          }
+          Button("Other network…") { destination = .other }
+        } header: {
+          if flow.reportsWiFi { scanHeader }
+        } footer: {
+          if let scanNote { Text(scanNote) }
+        }
       }
       if let held = settings.ssid {
         Section {
@@ -48,10 +80,51 @@ struct NetworkView: View {
     .navigationDestination(item: $destination) { destination in
       NetworkDetailsView(mode: mode(for: destination), settings: settings) { change in
         self.destination = nil
-        save(change)
+        Task { await flow.writeNetwork(change) }
       }
     }
+    .task { flow.scanNetworks() }
     .task { phoneSSID = await PhoneWiFi().currentSSID() }
+  }
+
+  private var scanHeader: some View {
+    HStack {
+      Text("Networks the controller hears")
+      Spacer()
+      if flow.isScanning {
+        ProgressView()
+      } else {
+        Button("Scan again") { flow.scanNetworks() }
+          .font(.footnote)
+          .textCase(nil)
+      }
+    }
+  }
+
+  /// What the last scan answer says beyond its list (P-217, P-218).
+  private var scanNote: String? {
+    guard flow.reportsWiFi, let scan = flow.scan else { return nil }
+    switch scan.refused {
+    case .tooSoon: return "The controller scanned moments ago. Try again in a few seconds."
+    case .radioOff:
+      return
+        "The controller's radio stays off until it has a network. Choose one above or enter its name."
+    case .linkDown: return "The controller cannot reach its Wi-Fi radio right now."
+    case .unauthorised: return "This phone may not start a scan."
+    case nil: break
+    }
+    switch scan.progress {
+    case .failed: return "The last scan failed. Scan again, or enter the network by name."
+    case .running: return "The scan is taking longer than expected. Scan again in a moment."
+    case .none, .complete: break
+    }
+    guard let networks = scan.networks else { return nil }
+    if networks.isEmpty { return "The controller heard no networks." }
+    if scan.unlisted > 0 {
+      return
+        "\(scan.unlisted) more networks were heard. Choose Other network for one not listed."
+    }
+    return nil
   }
 
   private func mode(for destination: Destination) -> NetworkDetailsView.Mode {
@@ -61,6 +134,11 @@ struct NetworkView: View {
     case .forget: .forget
     }
   }
+}
+
+/// SSIDs compare byte for byte, as the controller compares them (P-107).
+private func same(_ ssid: String, _ other: String?) -> Bool {
+  other.map { ssid.utf8.elementsEqual($0.utf8) } ?? false
 }
 
 private struct Header: View {
@@ -73,6 +151,56 @@ private struct Header: View {
     }
     .listRowBackground(Color.clear)
     .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 8, trailing: 4))
+  }
+}
+
+/// A network the controller heard. The list is the radio's account (P-221):
+/// it is shown, and a pick still goes through the password step.
+private struct HeardRow: View {
+  let network: HeardNetwork
+  let saved: Bool
+  let onPhone: Bool
+
+  var body: some View {
+    HStack {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(network.ssid)
+          .foregroundStyle(network.security.isJoinable ? Color.origin89.fg : Color.origin89.muted)
+        if let detail {
+          Text(detail).font(.origin89Label).foregroundStyle(Color.origin89.muted)
+        }
+      }
+      Spacer()
+      if network.security != .open {
+        Image(systemName: "lock.fill")
+          .foregroundStyle(Color.origin89.muted)
+          .accessibilityLabel("Secured")
+      }
+      Image(systemName: "wifi", variableValue: Double(network.bars) / 3)
+        .foregroundStyle(Color.origin89.muted)
+        .accessibilityLabel("Signal \(network.bars) of 3")
+      if network.security.isJoinable {
+        Image(systemName: "chevron.right")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(Color.origin89.faint)
+          .accessibilityHidden(true)
+      }
+    }
+    .contentShape(Rectangle())
+  }
+
+  private var detail: String? {
+    switch network.security {
+    case .open: return "Open network. The controller needs a password-protected network."
+    case .other: return "Enterprise or other security. Not supported."
+    case .wpa2Personal, .wpa3Personal: break
+    }
+    switch (saved, onPhone) {
+    case (true, true): return "Saved on the controller · this phone's network"
+    case (true, false): return "Saved on the controller"
+    case (false, true): return "This phone's network"
+    case (false, false): return nil
+    }
   }
 }
 

@@ -57,7 +57,18 @@ private actor FakeClient: ControllerClient {
     try record(.pair)
     if holdPair { await withCheckedContinuation { pairContinuation = $0 } }
   }
-  func hello() async throws(SetupFailure) { try record(.hello) }
+  func hello() async throws(SetupFailure) -> SessionReport {
+    try record(.hello)
+    return SessionReport(reportsWiFi: false)
+  }
+  func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
+    Issue.record("scanned a controller that does not report Wi-Fi")
+    throw .protocolError
+  }
+  func wifiStatus() async throws(SetupFailure) -> WiFiStatus {
+    Issue.record("read the status of a controller that does not report Wi-Fi")
+    throw .protocolError
+  }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
     try record(.read)
     return settings

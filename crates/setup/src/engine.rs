@@ -6,22 +6,31 @@
 //! a frame that answers nothing outstanding (P-024), an unsolicited event, or
 //! the link diagnostic `Error` with `session_id = 0, req_id = 0`; the caller
 //! keeps receiving until it gets `Ok(Some(_))` or an error.
+//!
+//! The network steps are `GetConfig` and a signed `SetConfig`; on a controller
+//! that sets capability bit 8 the engine also reads `WifiScan` and
+//! `WifiStatus` (P-216), and refuses to send either to one that does not.
 
 use core::mem;
 
 use km43::{
     Attempt, ClientId, ClientKind, ConfigAnswer, ConfigSection, Counter, Country, Discovery,
-    Enrolment, Envelope, Epoch, ErrorBody, ErrorCode, GetConfigRequest, Handshake, Header,
-    HelloInner, Hostname, Incoming, JoinWrite, MAX_LABEL, MAX_PAYLOAD, MAX_STRING, MessageType,
-    NetworkRead, NetworkWrite, Outcome, PairAckClaim, PairRequest, Passphrase, ReqId,
-    Session as Opened, SessionId, SessionKey, SetConfig, SetConfigAck, SetConfigOperation, Signed,
-    Ssid, Tagged, Time, TimeAck, TimeOperation, Version, Wrapper,
+    EmptyBody, Enrolment, Envelope, Epoch, ErrorBody, ErrorCode, GetConfigRequest, Handshake,
+    Header, HelloInner, Hostname, Incoming, JoinWrite, MAX_LABEL, MAX_PAYLOAD, MAX_STRING,
+    MessageType, NetworkRead, NetworkWrite, Outcome, PairAckClaim, PairRequest, Passphrase, ReqId,
+    ScanRequest, Session as Opened, SessionId, SessionKey, SetConfig, SetConfigAck,
+    SetConfigOperation, Signed, Ssid, Tagged, Time, TimeAck, TimeOperation, Version, Wrapper,
 };
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::code::{ControllerId, SetupCode};
+use crate::wifi::{NetworkScan, WifiStatus};
 
 const NONCE_BYTES: usize = 16;
+
+/// `Hello 0x81` capability bit 8, `CapabilityBit::WifiScanAndJoinStatus`: the
+/// controller answers `WifiScan` and `WifiStatus` (P-216).
+const REPORTS_WIFI: u32 = 1 << 8;
 
 /// What this client calls itself in `Hello` (`client_version`) unless told
 /// otherwise.
@@ -106,6 +115,9 @@ pub struct PairedClient {
 pub struct SessionInfo {
     /// Whether the controller's clock has been set.
     pub time_known: bool,
+    /// Whether the controller answers `WifiScan` and `WifiStatus` (capability
+    /// bit 8, P-216). Without it the person types the network name.
+    pub reports_wifi: bool,
 }
 
 /// The network section as `Config 0x86` carries it: never the passphrase.
@@ -186,6 +198,7 @@ struct Session {
     client_id: ClientId,
     counter: Counter,
     read: Option<ReadBack>,
+    reports_wifi: bool,
 }
 
 enum Stage {
@@ -215,6 +228,14 @@ enum Stage {
         expected: u32,
     },
     SettingTime {
+        req: ReqId,
+        session: Session,
+    },
+    Scanning {
+        req: ReqId,
+        session: Session,
+    },
+    CheckingWifi {
         req: ReqId,
         session: Session,
     },
@@ -294,6 +315,8 @@ impl Engine {
             | Stage::Reading { .. }
             | Stage::Writing { .. }
             | Stage::SettingTime { .. }
+            | Stage::Scanning { .. }
+            | Stage::CheckingWifi { .. }
             | Stage::Failed => return Err(SetupFailure::ProtocolError),
         };
         let req = self.allocate()?;
@@ -509,6 +532,7 @@ impl Engine {
         let report = opened.report();
         let info = SessionInfo {
             time_known: report.time_known,
+            reports_wifi: report.capabilities & REPORTS_WIFI != 0,
         };
         let counter = Counter(report.counter);
         self.stage = Stage::Ready(Session {
@@ -517,6 +541,7 @@ impl Engine {
             client_id: enrolment.client_id(),
             counter,
             read: None,
+            reports_wifi: info.reports_wifi,
         });
         Ok(Some(info))
     }
@@ -537,16 +562,28 @@ impl Engine {
     }
 
     fn get_config(&mut self, session: &Session) -> Result<(Vec<u8>, ReqId), SetupFailure> {
+        self.wrapped(session, MessageType::GetConfig, |dst| {
+            GetConfigRequest {
+                section: ConfigSection::Network,
+            }
+            .encode(dst)
+            .map_err(encoding)
+        })
+    }
+
+    /// A wrapped read: `body` tagged under the session key.
+    fn wrapped(
+        &mut self,
+        session: &Session,
+        kind: MessageType,
+        body: impl FnOnce(&mut [u8]) -> Result<usize, SetupFailure>,
+    ) -> Result<(Vec<u8>, ReqId), SetupFailure> {
         let mut payload = [0u8; MAX_PAYLOAD];
-        let len = GetConfigRequest {
-            section: ConfigSection::Network,
-        }
-        .encode(&mut payload)
-        .map_err(encoding)?;
+        let len = body(&mut payload)?;
         let payload = payload.get(..len).ok_or(SetupFailure::ProtocolError)?;
         let req = self.allocate()?;
         let header = Header {
-            kind: MessageType::GetConfig,
+            kind,
             session: session.id,
             req_id: req,
         };
@@ -646,6 +683,73 @@ impl Engine {
         self.settle(judged)
     }
 
+    /// `WifiScan 0x11`: the networks the controller's radio heard. With
+    /// `refresh` the controller also starts a scan unless it refuses (P-218);
+    /// the answer then says `running`, and a later read returns the new list.
+    /// Refused here, sending nothing, when the controller did not set
+    /// capability bit 8 (P-216).
+    pub fn wifi_scan_request(&mut self, refresh: bool) -> Result<Vec<u8>, SetupFailure> {
+        let session = self.take_reporting()?;
+        match self.wrapped(&session, MessageType::WifiScan, |dst| {
+            ScanRequest { refresh }.encode(dst).map_err(encoding)
+        }) {
+            Ok((frame, req)) => {
+                self.stage = Stage::Scanning { req, session };
+                Ok(frame)
+            }
+            Err(why) => {
+                self.stage = Stage::Ready(session);
+                Err(why)
+            }
+        }
+    }
+
+    /// Judge a frame received while `WifiScan` is outstanding.
+    pub fn wifi_scan_reply(&mut self, frame: &[u8]) -> Result<Option<NetworkScan>, SetupFailure> {
+        let Stage::Scanning { req, session } = &self.stage else {
+            return Err(SetupFailure::ProtocolError);
+        };
+        let judged = judge_wrapped(frame, *req, session, MessageType::WifiScanResponse)
+            .and_then(|payload| payload.map(|body| NetworkScan::read(&body)).transpose());
+        if let Ok(Some(_)) = judged {
+            self.finish_request(|_| {});
+        }
+        self.settle(judged)
+    }
+
+    /// `WifiStatus 0x12`: what the radio did with the network it holds.
+    /// Refused here like [`Engine::wifi_scan_request`].
+    pub fn wifi_status_request(&mut self) -> Result<Vec<u8>, SetupFailure> {
+        let session = self.take_reporting()?;
+        match self.wrapped(&session, MessageType::WifiStatus, |dst| {
+            EmptyBody
+                .encode(MessageType::WifiStatus, dst)
+                .map_err(encoding)
+        }) {
+            Ok((frame, req)) => {
+                self.stage = Stage::CheckingWifi { req, session };
+                Ok(frame)
+            }
+            Err(why) => {
+                self.stage = Stage::Ready(session);
+                Err(why)
+            }
+        }
+    }
+
+    /// Judge a frame received while `WifiStatus` is outstanding.
+    pub fn wifi_status_reply(&mut self, frame: &[u8]) -> Result<Option<WifiStatus>, SetupFailure> {
+        let Stage::CheckingWifi { req, session } = &self.stage else {
+            return Err(SetupFailure::ProtocolError);
+        };
+        let judged = judge_wrapped(frame, *req, session, MessageType::WifiStatusResponse)
+            .and_then(|payload| payload.map(|body| WifiStatus::read(&body)).transpose());
+        if let Ok(Some(_)) = judged {
+            self.finish_request(|_| {});
+        }
+        self.settle(judged)
+    }
+
     /// A signed `Time 0x0A` setting the controller's clock to `at_ms`,
     /// milliseconds since the Unix epoch.
     pub fn set_time_request(&mut self, at_ms: u64) -> Result<Vec<u8>, SetupFailure> {
@@ -711,6 +815,17 @@ impl Engine {
         Ok((frame, req, counter))
     }
 
+    /// The ready session, only when its controller reports Wi-Fi (P-216).
+    fn take_reporting(&mut self) -> Result<Session, SetupFailure> {
+        let session = self.take_ready()?;
+        if session.reports_wifi {
+            Ok(session)
+        } else {
+            self.stage = Stage::Ready(session);
+            Err(SetupFailure::ProtocolError)
+        }
+    }
+
     fn take_ready(&mut self) -> Result<Session, SetupFailure> {
         match mem::replace(&mut self.stage, Stage::Failed) {
             Stage::Ready(session) => Ok(session),
@@ -726,7 +841,9 @@ impl Engine {
         match mem::replace(&mut self.stage, Stage::Failed) {
             Stage::Reading { mut session, .. }
             | Stage::Writing { mut session, .. }
-            | Stage::SettingTime { mut session, .. } => {
+            | Stage::SettingTime { mut session, .. }
+            | Stage::Scanning { mut session, .. }
+            | Stage::CheckingWifi { mut session, .. } => {
                 update(&mut session);
                 self.stage = Stage::Ready(session);
             }
@@ -847,6 +964,20 @@ fn refused_by_error(envelope: Envelope<'_>, session: Option<&Session>) -> SetupF
         )
         | Incoming::Unknown(_) => SetupFailure::ProtocolError,
     }
+}
+
+/// The verified payload of a wrapped response of `kind` to `req`, or `None`
+/// for a frame answering something else.
+fn judge_wrapped(
+    frame: &[u8],
+    req: ReqId,
+    session: &Session,
+    kind: MessageType,
+) -> Result<Option<Vec<u8>>, SetupFailure> {
+    let Some(envelope) = inbound(frame, req, Some(session), kind)? else {
+        return Ok(None);
+    };
+    verified(envelope, &session.key).map(|payload| Some(payload.to_vec()))
 }
 
 /// The verified payload of a wrapped response.
@@ -1011,6 +1142,15 @@ fn invalid<E>(_: E) -> SetupFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_wifi_is_capability_bit_8() {
+        assert_eq!(
+            km43::CapabilityBit::try_from(8),
+            Ok(km43::CapabilityBit::WifiScanAndJoinStatus)
+        );
+        assert_eq!(REPORTS_WIFI, 1 << 8);
+    }
 
     #[test]
     fn fits_text_on_character_boundaries() {
