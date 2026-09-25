@@ -398,7 +398,9 @@ func label(_ state: SetupFlow.State) -> String {
       case .joined:
         return options.has("bluetooth-only")
           || (!flow.isSwitchingToWiFi && (flow.link != .bluetooth || flow.wifiUnavailable != nil))
-      case .failed, .noAnswer, .connectionLost: return true
+      case .failed, .noAnswer: return true
+      // A Wi-Fi search may follow a lost Bluetooth link.
+      case .connectionLost: return !flow.isSwitchingToWiFi
       case .idle, .waiting: return false
       }
     }

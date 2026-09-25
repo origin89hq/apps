@@ -398,6 +398,38 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
   #expect(bench.addresses.load(deviceID: deviceID) == address)
 }
 
+/// With no candidate at all, the search still ends with a reason.
+@Test @MainActor func aSearchWithNoCandidateReportsTheControllerUnreachable() async throws {
+  let bluetooth = LinkClient()
+  let bench = launch(bluetooth: bluetooth, browser: FakeBrowser())
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .connectionLost && !bench.flow.isSwitchingToWiFi }
+  #expect(bench.flow.wifiUnavailable == .notReachable)
+  #expect(bench.flow.link == nil)
+  #expect(await bench.webSocket.opens == 0)
+}
+
+/// Starting over as the search is scheduled leaves nothing open.
+@Test @MainActor func resettingBeforeTheSearchStartsLeavesNothingOpen() async throws {
+  let bluetooth = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  browser.found = [address]
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .waiting && bench.flow.isSwitchingToWiFi }
+  await bench.flow.reset()
+  for _ in 0..<100 { await Task.yield() }
+  #expect(bench.flow.state == .enterCode)
+  #expect(bench.flow.link == nil)
+  #expect(!bench.flow.isSwitchingToWiFi)
+  let opens = await bench.webSocket.opens
+  #expect(await bench.webSocket.closes == opens)
+}
+
 /// The controller is looked for again until `wifiLimit`, then the join is
 /// reported lost with the reason, and a check tries again.
 @Test @MainActor func aControllerNotFoundOnWiFiIsReportedAfterTheLimit() async throws {

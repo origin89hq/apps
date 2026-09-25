@@ -568,8 +568,14 @@ import Observation
       let deviceID = controller?.deviceID
     else { return false }
     SetupLog.flow.notice("the write's answer was lost: confirming it over Wi-Fi")
+    // Set first, so a suspend during the close still ends the search.
+    isSwitchingToWiFi = true
+    let operation = generation + 1
     await close()
-    let operation = generation
+    guard generation == operation else {
+      isSwitchingToWiFi = false
+      return true
+    }
     guard let opened = await reachWiFi(deviceID: deviceID, operation) else {
       return generation != operation
     }
@@ -765,9 +771,11 @@ import Observation
   /// so a suspend ends the search. Nil when no attempt worked or the flow
   /// moved on.
   private func reachWiFi(deviceID: String, _ operation: Int) async -> WiFiSession? {
+    defer { isSwitchingToWiFi = false }
+    guard generation == operation else { return nil }
     transportActive = true
     isSwitchingToWiFi = true
-    defer { isSwitchingToWiFi = false }
+    wifiUnavailable = nil
     let deadline = clock.now + Self.wifiLimit
     while generation == operation {
       if let opened = await findWiFi(deviceID: deviceID, operation) { return opened }
@@ -777,6 +785,8 @@ import Observation
     if generation == operation {
       SetupLog.flow.notice("the controller was not found on Wi-Fi")
       transportActive = false
+      // No candidate answered, or none was found at all.
+      if wifiUnavailable == nil { wifiUnavailable = .notReachable }
     }
     return nil
   }
@@ -1000,8 +1010,9 @@ import Observation
   /// network stays written, since its step reconnects on its own; anything
   /// else in progress is suspended and resumes through retry.
   public func suspend() async {
-    // A connect still before its open counts too: closing ends it there.
-    guard transportActive || isConnecting else { return }
+    // A connect still before its open, or a Wi-Fi search about to start,
+    // counts too: closing ends it there.
+    guard transportActive || isConnecting || isSwitchingToWiFi else { return }
     SetupLog.flow.notice("the app left the foreground: closing the connection")
     await close()
     switch state {
