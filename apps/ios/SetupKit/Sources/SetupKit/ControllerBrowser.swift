@@ -66,7 +66,7 @@ import Network
     return await withTaskCancellationHandler {
       await withCheckedContinuation { continuation in
         search.continuation = continuation
-        search.timer = Task { [limit] in
+        search.limitTimer = Task { [limit] in
           do { try await Task.sleep(for: limit) } catch { return }
           search.finish()
         }
@@ -78,11 +78,13 @@ import Network
               else { return nil }
               return result.endpoint
             }
-            // More matches may follow the first; wait `settle` for them.
-            if !search.found.isEmpty, !search.settling {
-              search.settling = true
-              search.timer?.cancel()
-              search.timer = Task {
+            // More matches may follow the first; wait `settle` for them. A
+            // match that goes away before then leaves `limit` in charge.
+            if search.found.isEmpty {
+              search.settleTimer?.cancel()
+              search.settleTimer = nil
+            } else if search.settleTimer == nil {
+              search.settleTimer = Task {
                 do { try await Task.sleep(for: settle) } catch { return }
                 search.finish()
               }
@@ -156,15 +158,16 @@ import Network
   }
 }
 
-/// One browse in flight. It holds the browser until the first of a match, a
-/// failure, the limit or cancellation, then stops it and resumes once.
+/// One browse in flight. It holds the browser until the first of the settle
+/// time after a match, a failure, the limit or cancellation, then stops it and
+/// resumes once.
 @MainActor private final class Search {
   private var browser: NWBrowser?
   var continuation: CheckedContinuation<[NWEndpoint], Never>?
   var found: [NWEndpoint] = []
-  /// A match was seen; `timer` now ends the search after the settle time.
-  var settling = false
-  var timer: Task<Void, Never>?
+  var limitTimer: Task<Void, Never>?
+  /// Set while a match is seen; it ends the search after the settle time.
+  var settleTimer: Task<Void, Never>?
 
   init(_ browser: NWBrowser) { self.browser = browser }
 
@@ -174,8 +177,10 @@ import Network
     browser?.stateUpdateHandler = nil
     browser?.cancel()
     browser = nil
-    timer?.cancel()
-    timer = nil
+    limitTimer?.cancel()
+    limitTimer = nil
+    settleTimer?.cancel()
+    settleTimer = nil
     continuation?.resume(returning: found)
     continuation = nil
   }
