@@ -315,6 +315,7 @@ import Observation
     )
     await closeTransport()
     await (transport as? any PeerExcludingTransport)?.clearExcludedPeers()
+    guard generation == operation else { return }
     if greets, webSocketFactory != nil, let deviceID = controller?.deviceID ?? lastDeviceID {
       // Active from here, so a suspend during the attempt ends it.
       transportActive = true

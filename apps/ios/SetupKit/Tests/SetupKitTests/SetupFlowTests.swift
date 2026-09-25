@@ -566,6 +566,50 @@ private struct Factory: ControllerClientFactory {
   #expect(await transport.opens == 0)
 }
 
+/// Holds `clearExcludedPeers` until released, like a transport still busy.
+private actor HeldClearTransport: PeerExcludingTransport {
+  private var held: CheckedContinuation<Void, Never>?
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private(set) var opens = 0
+  func open() async throws(TransportError) { opens += 1 }
+  func send(_ frame: Data) async throws(TransportError) {}
+  func receive() async throws(TransportError) -> Data { Data() }
+  func close() async {}
+  func excludeConnectedPeer() async {}
+  func clearExcludedPeers() async {
+    await withCheckedContinuation {
+      held = $0
+      for waiter in waiters { waiter.resume() }
+      waiters = []
+    }
+  }
+  func clearing() async {
+    if held != nil { return }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+  func release() {
+    held?.resume()
+    held = nil
+  }
+}
+
+/// A suspend while the connect clears exclusions stays suspended: the
+/// connect does not go on to the window step.
+@Test @MainActor func backgroundWhileClearingExclusionsSuspends() async throws {
+  let transport = HeldClearTransport()
+  let flow = SetupFlow(
+    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
+    transportFactory: { transport }, clock: TestClock())
+  try flow.submitCode("valid")
+  let run = Task { await flow.connect() }
+  await transport.clearing()
+  await flow.suspend()
+  await transport.release()
+  await run.value
+  #expect(flow.state == .suspended)
+  #expect(await transport.opens == 0)
+}
+
 @Test @MainActor func backgroundDuringPairSuspendsAndAbandonsIt() async throws {
   let client = FakeClient(holdPair: true)
   let clock = TestClock()
