@@ -419,6 +419,10 @@ func label(_ state: SetupFlow.State) -> String {
     await flow.writeNetwork(
       NetworkChange(ssid: nil, passphrase: nil, country: country, hostname: hostname))
     timeline.say("state \(label(flow.state))")
+    guard case .written = flow.state else {
+      await flow.reset()
+      throw BenchError("not cleared")
+    }
     await flow.reset()
   }
 

@@ -78,8 +78,15 @@ private actor WiFiClient: ControllerClient {
     if let helloFailure { throw helloFailure }
     return SessionReport(reportsWiFi: reportsWiFi)
   }
+  /// The next read fails with this, once.
+  var readFailure: SetupFailure?
+  func failNextRead(with failure: SetupFailure) { readFailure = failure }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
     calls.append(.read)
+    if let failure = readFailure {
+      readFailure = nil
+      throw failure
+    }
     return settings
   }
   func writeNetwork(_ change: NetworkChange, expectedVersion: UInt32) async throws(SetupFailure)
@@ -614,4 +621,32 @@ private let home = NetworkSettings(
     NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
   #expect(flow.state == .written(8))
   #expect(!flow.joinsHeldNetwork)
+}
+
+/// The link drops between Pair and the first read: the read on the next
+/// connection still finds the network held since pairing, and watches it.
+@Test @MainActor func aHeldNetworkReadAfterAReconnectIsStillWatched() async throws {
+  let joined7 = WiFiStatus(section: 7, radio: (version: 7, state: .joined(address: "10.0.0.9")))
+  let client = WiFiClient(statuses: [joined7], settings: home)
+  await client.failNextRead(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let flow = SetupFlow(
+    factory: Factory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { Transport() }, clock: clock)
+  try flow.submitCode("valid")
+  await flow.connect()
+  await flow.confirmWindowOpened()
+  #expect(flow.state == .failed(.connectionDropped, .connecting))
+  await flow.retry()
+  #expect(flow.state == .written(7))
+  #expect(flow.joinsHeldNetwork)
+  await settle { flow.join != .waiting }
+  #expect(flow.join == .joined(address: "10.0.0.9"))
+  #expect(
+    await client.calls == [.discover, .pair, .hello, .read, .discover, .hello, .read, .status])
+
+  // Only the first read after Pair: reading again goes to the form.
+  await flow.changeNetwork()
+  #expect(flow.state == .editingNetwork(home))
 }

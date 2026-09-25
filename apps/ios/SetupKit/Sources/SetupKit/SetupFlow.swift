@@ -221,6 +221,9 @@ import Observation
   private var resume: Resume = .pair
   /// Set by a new code: the next connect first looks for a kept enrolment.
   private var restorePending = false
+  /// Set by `Pair` until a network read succeeds, across reconnects: a
+  /// controller holding a network starts its station once the window closes.
+  private var pairedAwaitingRead = false
   private var generation = 0
   private var isConnecting = false
   private var deadlineTask: Task<Void, Never>?
@@ -399,11 +402,12 @@ import Observation
       deadlineTask?.cancel()
       rememberController()
       resume = .readNetwork
+      pairedAwaitingRead = true
       state = .greeting
       let report = try await client.hello()
       guard generation == operation else { return }
       reportsWiFi = report.reportsWiFi
-      await readNetwork(afterPair: true)
+      await readNetwork()
     } catch {
       guard generation == operation else { return }
       deadlineTask?.cancel()
@@ -504,10 +508,10 @@ import Observation
     }
   }
 
-  /// Read the network section. Right after `Pair`, a controller holding a
-  /// network is starting its station: the flow watches that join as if the
-  /// network were just written.
-  private func readNetwork(afterPair: Bool = false) async {
+  /// Read the network section. The first read after `Pair`, even on a later
+  /// connection, finds a controller holding a network starting its station:
+  /// the flow watches that join as if the network were just written.
+  private func readNetwork() async {
     guard let client = session else { return }
     let operation = generation
     state = .readingNetwork
@@ -518,6 +522,8 @@ import Observation
         "network section version \(settings.version, privacy: .public), network held \(settings.ssid != nil, privacy: .public), country held \(settings.country != nil, privacy: .public)"
       )
       network = settings
+      let afterPair = pairedAwaitingRead
+      pairedAwaitingRead = false
       if afterPair, reportsWiFi, settings.ssid != nil, settings.passphraseSet {
         SetupLog.flow.info("the controller holds a network: watching its station join")
         resume = .written(settings.version)
@@ -1085,6 +1091,7 @@ import Observation
 
   /// Drop what this flow learned about the controller it last reached.
   private func clearControllerState() {
+    pairedAwaitingRead = false
     controller = nil
     lastDeviceID = nil
     network = nil
