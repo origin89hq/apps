@@ -13,7 +13,19 @@ final class StubHTTP: HTTPSender, @unchecked Sendable {
   private let lock = NSLock()
   private var answers: [Answer]
   private var sent: [URLRequest] = []
+  private var holding = false
+  private var held: [CheckedContinuation<Void, Never>] = []
   init(_ answers: [Answer]) { self.answers = answers }
+  /// Keep every answer back until `release()`.
+  func hold() { lock.withLock { holding = true } }
+  func release() {
+    let waiting = lock.withLock {
+      holding = false
+      defer { held.removeAll() }
+      return held
+    }
+    for continuation in waiting { continuation.resume() }
+  }
   var requests: [URLRequest] { lock.withLock { sent } }
   /// The JSON body of each request.
   var bodies: [[String: String]] {
@@ -25,6 +37,13 @@ final class StubHTTP: HTTPSender, @unchecked Sendable {
     let answer: Answer? = lock.withLock {
       sent.append(request)
       return answers.isEmpty ? nil : answers.removeFirst()
+    }
+    await withCheckedContinuation { continuation in
+      let waits = lock.withLock {
+        if holding { held.append(continuation) }
+        return holding
+      }
+      if !waits { continuation.resume() }
     }
     // Let a concurrent caller reach the account while this one waits.
     await Task.yield()

@@ -218,6 +218,8 @@ private final class Sheet: @unchecked Sendable {
     auth: [.status(200, sessionJSON(id: "user_01B", access: token("b")))])
   let store = Pairings()
   let sheet = Sheet()
+  // The first answer waits until the switch is done.
+  setup.cloudHTTP.hold()
   let deletion = Task {
     try await setup.cloud.deleteAccount(
       pairings: .forget, store: store, authenticate: sheet.authenticate)
@@ -226,6 +228,7 @@ private final class Sheet: @unchecked Sendable {
   try setup.account.signOut()
   try await setup.account.signIn(using: sheet.authenticate)
   #expect(setup.account.status == .signedIn(other))
+  setup.cloudHTTP.release()
   await #expect(throws: CloudError.account(.differentAccount)) { try await deletion.value }
   #expect(setup.cloudHTTP.requests.count == 1)
   #expect(setup.account.status == .signedIn(other))
