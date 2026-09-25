@@ -379,8 +379,7 @@ import Observation
       await self.close()
     }
     state = .discovering
-    // The window is open now, so the controller advertises. A session whose
-    // kept enrolment was lost is connected already.
+    // The window is open now, so the controller advertises.
     if !transportActive {
       isConnecting = true
       guard await openBluetooth(operation) else { return }
@@ -435,11 +434,15 @@ import Observation
       let discovered = try await discover(client, operation)
       guard generation == operation else { return }
       controller = discovered
-      // A kept enrolment for another epoch (P-222): pair on this connection.
+      // A kept enrolment for another epoch (P-222): pair once the window is
+      // open. Opening it can restart the comms module and end this link, so
+      // `confirmWindowOpened()` connects again.
       guard await client.isEnrolled() else {
         guard generation == operation else { return }
         SetupLog.flow.notice("the kept enrolment is for another epoch: pairing again")
         keptEnrolmentLost = true
+        await closeTransport()
+        guard generation == operation else { return }
         state = .openWindow
         return
       }

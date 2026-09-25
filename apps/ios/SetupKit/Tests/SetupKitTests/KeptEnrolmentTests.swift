@@ -41,10 +41,12 @@ final class MemoryEnrolmentStore: EnrolmentStore, @unchecked Sendable {
 }
 
 private actor Transport: FrameTransport {
-  func open() async throws(TransportError) {}
+  private(set) var opens = 0
+  private(set) var closes = 0
+  func open() async throws(TransportError) { opens += 1 }
   func send(_ frame: Data) async throws(TransportError) {}
   func receive() async throws(TransportError) -> Data { Data() }
-  func close() async {}
+  func close() async { closes += 1 }
 }
 
 /// Holds a credential the way the Rust engine does: the setup code, a kept
@@ -142,10 +144,9 @@ private let kept = Data([0x01, 0x55])
 private let editing = SetupFlow.State.editingNetwork(
   NetworkSettings(version: 1, ssid: nil, passphraseSet: false, country: nil, hostname: nil))
 
-@MainActor private func connected(_ client: KeptClient, _ store: MemoryEnrolmentStore) async throws
-  -> SetupFlow
-{
-  let transport = Transport()
+@MainActor private func connected(
+  _ client: KeptClient, _ store: MemoryEnrolmentStore, transport: Transport = Transport()
+) async throws -> SetupFlow {
   let flow = SetupFlow(
     factory: Factory(client: client), store: store, transportFactory: { transport },
     clock: OpenWindowClock())
@@ -177,16 +178,22 @@ private let editing = SetupFlow.State.editingNetwork(
   #expect(store[KeptClient.deviceID] == KeptClient.paired)
 }
 
-/// P-222: a kept enrolment for another epoch pairs again on the same
-/// connection, and the new enrolment replaces it.
+/// P-222: a kept enrolment for another epoch pairs again, and the new
+/// enrolment replaces it. Opening the window can restart the comms module, so
+/// the link that found out is closed and a new one opens once it is open.
 @Test @MainActor func aKeptEnrolmentForAnotherEpochPairsAgain() async throws {
   let client = KeptClient(.otherEpoch)
   let store = MemoryEnrolmentStore([KeptClient.deviceID: kept])
-  let flow = try await connected(client, store)
+  let transport = Transport()
+  let flow = try await connected(client, store, transport: transport)
   #expect(flow.state == .openWindow)
   #expect(flow.keptEnrolmentLost)
   #expect(await client.calls == ["discover"])
+  #expect(flow.link == nil)
+  #expect(await transport.opens == 1)
+  #expect(await transport.closes == 1)
   await flow.confirmWindowOpened()
+  #expect(await transport.opens == 2)
   #expect(flow.state == editing)
   #expect(await client.calls == ["discover", "discover", "pair", "hello", "read"])
   #expect(store[KeptClient.deviceID] == KeptClient.paired)
