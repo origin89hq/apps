@@ -267,14 +267,17 @@ private func signedIn(access: String, refresh: String = "r1") -> AccountSession 
 /// Only `invalid_grant` says the refresh token is dead; a timeout, a rate
 /// limit or another client error keeps the session.
 @Test(arguments: [
-  (408, ""), (429, ""), (400, #"{"error":"invalid_request"}"#),
-  (401, #"{"error":"invalid_client"}"#), (403, ""),
+  (408, "", AccountError.unavailable), (429, "", .unavailable),
+  (400, #"{"error":"invalid_request"}"#, .invalidResponse),
+  (401, #"{"error":"invalid_client"}"#, .invalidResponse), (403, "", .invalidResponse),
 ])
-@MainActor func anErrorOtherThanInvalidGrantKeepsTheSession(status: Int, body: String) async {
+@MainActor func anErrorOtherThanInvalidGrantKeepsTheSession(
+  status: Int, body: String, expected: AccountError
+) async {
   let kept = signedIn(access: token(expiresIn: -10))
   let store = MemorySessionStore(kept)
   let account = account(StubHTTP([.status(status, body)]), store)
-  await #expect(throws: (any Error).self) { try await account.accessToken() }
+  await #expect(throws: expected) { try await account.accessToken() }
   #expect(account.status == .signedIn(user))
   #expect(!account.sessionEnded)
   #expect(store.session == kept)
