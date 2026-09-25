@@ -31,12 +31,19 @@ private actor LinkClient: ControllerClient {
     ControllerSummary(deviceID: deviceID))
   var helloFailure: SetupFailure?
   var timeFailure: SetupFailure?
+  var statusFailure: SetupFailure?
+  var writeFailure: SetupFailure?
   var joinedAt: String?
+  /// The section `readNetwork` answers.
+  var held = settings
 
   init(joinedAt: String? = nil) { self.joinedAt = joinedAt }
   func answerDiscover(_ result: Result<ControllerSummary, SetupFailure>) { discovered = result }
   func failHello(with failure: SetupFailure?) { helloFailure = failure }
   func failTime(with failure: SetupFailure?) { timeFailure = failure }
+  func failStatus(with failure: SetupFailure?) { statusFailure = failure }
+  func failWrite(with failure: SetupFailure?) { writeFailure = failure }
+  func hold(_ settings: NetworkSettings) { held = settings }
   func restore(from store: any EnrolmentStore) async {}
   func isEnrolled() async -> Bool { true }
   func keep(in store: any EnrolmentStore) async throws {}
@@ -52,13 +59,14 @@ private actor LinkClient: ControllerClient {
   }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
     calls.append(.read)
-    return settings
+    return held
   }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
     NetworkScan(progress: .none, networks: nil)
   }
   func wifiStatus() async throws(SetupFailure) -> WiFiStatus {
     calls.append(.status)
+    if let statusFailure { throw statusFailure }
     return WiFiStatus(
       section: 8, radio: (version: 8, state: joinedAt.map { .joined(address: $0) } ?? .joining))
   }
@@ -66,6 +74,7 @@ private actor LinkClient: ControllerClient {
     -> UInt32
   {
     calls.append(.write)
+    if let writeFailure { throw writeFailure }
     return expectedVersion + 1
   }
   func setTime(_ date: Date) async throws(SetupFailure) {
@@ -129,6 +138,16 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
   }
 }
 
+/// DNS-SD answers that a test changes as the controller comes and goes.
+@MainActor private final class FakeBrowser: ControllerBrowser {
+  var found: [String] = []
+  private(set) var browses = 0
+  func addresses(advertising deviceID: String) async -> [String] {
+    browses += 1
+    return found
+  }
+}
+
 @MainActor private struct Bench {
   let flow: SetupFlow
   let bluetooth: LinkTransport
@@ -145,7 +164,7 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
 /// A launch that reconnects to the controller from its kept enrolment.
 @MainActor private func launch(
   bluetooth: LinkClient = LinkClient(joinedAt: address), wifi: LinkClient? = LinkClient(),
-  addresses: MemoryAddresses = MemoryAddresses()
+  addresses: MemoryAddresses = MemoryAddresses(), browser: FakeBrowser? = nil
 ) -> Bench {
   let bluetoothTransport = LinkTransport(.bluetooth)
   let webSocket = LinkTransport(.wifi)
@@ -158,7 +177,7 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
       dialled.addresses.append(address)
       return webSocket
     },
-    addresses: addresses)
+    addresses: addresses, browser: browser)
   return Bench(
     flow: flow, bluetooth: bluetoothTransport, webSocket: webSocket, factory: factory,
     addresses: addresses, dialled: dialled)
@@ -348,4 +367,158 @@ final class MemoryAddresses: ControllerAddressStore, @unchecked Sendable {
   let opens = await bench.webSocket.opens
   #expect(await bench.webSocket.closes == opens)
   #expect(bench.flow.state == .written(8))
+}
+
+// MARK: - Bluetooth dropping while the station starts
+
+/// Connect over Bluetooth with the controller not yet on the network.
+@MainActor private func editingOverBluetooth(_ bench: Bench) async {
+  await bench.flow.connect()
+  #expect(bench.flow.state == .editingNetwork(settings))
+  #expect(bench.flow.link == .bluetooth)
+}
+
+/// The station starting drops Bluetooth before the join is reported: the
+/// flow finds the controller over DNS-SD and reads the join over Wi-Fi.
+@Test @MainActor func aBluetoothDropDuringTheJoinContinuesOverWiFi() async throws {
+  let bluetooth = LinkClient()
+  let wifi = LinkClient(joinedAt: address)
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, wifi: wifi, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  browser.found = [address]
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .joined(address: address) }
+  #expect(bench.flow.state == .written(8))
+  #expect(bench.flow.link == .wifi(address: address))
+  #expect(!bench.flow.isSwitchingToWiFi)
+  #expect(await bench.bluetooth.closes == 1)
+  #expect(await wifi.calls == [.discover, .hello, .status])
+  #expect(bench.addresses.load(deviceID: deviceID) == address)
+}
+
+/// With no candidate at all, the search still ends with a reason.
+@Test @MainActor func aSearchWithNoCandidateReportsTheControllerUnreachable() async throws {
+  let bluetooth = LinkClient()
+  let bench = launch(bluetooth: bluetooth, browser: FakeBrowser())
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .connectionLost && !bench.flow.isSwitchingToWiFi }
+  #expect(bench.flow.wifiUnavailable == .notReachable)
+  #expect(bench.flow.link == nil)
+  #expect(await bench.webSocket.opens == 0)
+}
+
+/// Starting over as the search is scheduled leaves nothing open.
+@Test @MainActor func resettingBeforeTheSearchStartsLeavesNothingOpen() async throws {
+  let bluetooth = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  browser.found = [address]
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .waiting && bench.flow.isSwitchingToWiFi }
+  await bench.flow.reset()
+  for _ in 0..<100 { await Task.yield() }
+  #expect(bench.flow.state == .enterCode)
+  #expect(bench.flow.link == nil)
+  #expect(!bench.flow.isSwitchingToWiFi)
+  let opens = await bench.webSocket.opens
+  #expect(await bench.webSocket.closes == opens)
+}
+
+/// The controller is looked for again until `wifiLimit`, then the join is
+/// reported lost with the reason, and a check tries again.
+@Test @MainActor func aControllerNotFoundOnWiFiIsReportedAfterTheLimit() async throws {
+  let bluetooth = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  browser.found = [address]
+  await bench.webSocket.failOpens(with: .unreachable)
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.join == .connectionLost && !bench.flow.isSwitchingToWiFi }
+  #expect(bench.flow.state == .written(8))
+  #expect(bench.flow.link == nil)
+  #expect(bench.flow.wifiUnavailable == .notReachable)
+  // After the connect's browse, one at 0 s and one every 2 s up to the 30 s limit.
+  #expect(browser.browses == 1 + 16)
+  #expect(await bench.webSocket.opens == 16)
+  #expect(await bench.webSocket.closes == 0)
+}
+
+/// Leaving the app during the search ends it with nothing open.
+@Test @MainActor func suspendingDuringTheSearchEndsIt() async throws {
+  let bluetooth = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failStatus(with: .connectionDropped)
+  await bench.webSocket.failOpens(with: .unreachable)
+  await bench.flow.writeNetwork(change)
+  await settle { bench.flow.isSwitchingToWiFi }
+  await bench.flow.suspend()
+  await settle { !bench.flow.isSwitchingToWiFi }
+  #expect(bench.flow.link == nil)
+  #expect(bench.flow.state == .written(8))
+  let browses = browser.browses
+  for _ in 0..<100 { await Task.yield() }
+  #expect(browser.browses == browses)
+}
+
+/// A write whose answer was lost with Bluetooth landed when the section read
+/// over Wi-Fi holds it: setup continues from it there.
+@Test @MainActor func aLostWriteAnswerIsConfirmedOverWiFi() async throws {
+  let bluetooth = LinkClient()
+  let wifi = LinkClient(joinedAt: address)
+  await wifi.hold(
+    NetworkSettings(version: 8, ssid: "cabin", passphraseSet: true, country: "CA", hostname: "unit")
+  )
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, wifi: wifi, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failWrite(with: .connectionDropped)
+  browser.found = [address]
+  await bench.flow.writeNetwork(change)
+  #expect(bench.flow.state == .written(8))
+  #expect(bench.flow.writtenVersion == 8)
+  #expect(bench.flow.link == .wifi(address: address))
+  await settle { bench.flow.join == .joined(address: address) }
+  #expect(await wifi.calls == [.discover, .hello, .read, .status])
+}
+
+/// Over Wi-Fi the section still holds the old network, or the controller is
+/// not found: the write did not land as far as this phone knows.
+@Test(arguments: [true, false])
+@MainActor func anUnconfirmedLostWriteFails(found: Bool) async throws {
+  let bluetooth = LinkClient()
+  let wifi = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, wifi: wifi, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failWrite(with: .connectionDropped)
+  if found { browser.found = [address] }
+  await bench.flow.writeNetwork(change)
+  #expect(bench.flow.state == .failed(.connectionDropped, .connecting))
+  #expect(bench.flow.writtenVersion == nil)
+  #expect(bench.flow.link == nil)
+  #expect(await bench.webSocket.closes == (found ? 1 : 0))
+  #expect(await wifi.calls == (found ? [.discover, .hello, .read] : []))
+}
+
+/// A refusal is the controller's answer, not a lost one: nothing to confirm.
+@Test @MainActor func aRefusedWriteIsNotLookedForOverWiFi() async throws {
+  let bluetooth = LinkClient()
+  let browser = FakeBrowser()
+  let bench = launch(bluetooth: bluetooth, browser: browser)
+  await editingOverBluetooth(bench)
+  await bluetooth.failWrite(with: .staleVersion)
+  browser.found = [address]
+  await bench.flow.writeNetwork(change)
+  #expect(bench.flow.state == .failed(.staleVersion, .readingNetwork))
+  #expect(browser.browses == 1)
 }

@@ -9,14 +9,19 @@ import SetupKit
 let usage = """
   usage: setup-bench <command> [options]
 
-    pair [--window-open]   Pair with the controller whose code is in $ORIGIN89_SETUP_CODE
+    pair [--window-open] [--ssid NAME] [--watch SECONDS]
+                           Pair with the controller whose code is in $ORIGIN89_SETUP_CODE
                            and read its network. Without --window-open it waits for Enter
-                           once the pairing window is open on the panel.
+                           once the pairing window is open on the panel. A controller that
+                           holds a network joins it: watch that (default 60 s). With
+                           --ssid, a controller without one gets that network written on
+                           the pairing connection, as write does.
     read                   Continue from the kept enrolment and read the network section.
     scan                   Read, then run a Wi-Fi scan to its end.
     write --ssid NAME [--country CC] [--hostname NAME] [--watch SECONDS]
                            Read, then write the network with the passphrase in
                            $ORIGIN89_WIFI_PASSPHRASE, and watch the join (default 60 s).
+    clear                  Read, then write no network, keeping the country and hostname.
     hold --seconds N       Read, stay connected and idle for N seconds, then send a request.
 
   options:
@@ -260,6 +265,7 @@ func label(_ state: SetupFlow.State) -> String {
       await flow.reset()
     case "scan": try await scan()
     case "write": try await write()
+    case "clear": try await clear()
     case "hold": try await hold()
     case "help": print(usage)
     default: throw BenchError(usage)
@@ -282,12 +288,27 @@ func label(_ state: SetupFlow.State) -> String {
       }
       await flow.confirmWindowOpened()
     }
-    guard case .editingNetwork(let settings) = flow.state, let deviceID = flow.controller?.deviceID
-    else { throw BenchError("pairing stopped: \(label(flow.state))") }
+    guard let deviceID = flow.controller?.deviceID, let settings = flow.network else {
+      throw BenchError("pairing stopped: \(label(flow.state))")
+    }
+    switch flow.state {
+    case .editingNetwork, .written: break
+    default: throw BenchError("pairing stopped: \(label(flow.state))")
+    }
     try BenchFiles.ensureDirectory()
     try Data(deviceID.utf8).write(to: BenchFiles.lastDevice, options: [.atomic])
     timeline.say("paired with \(deviceID)")
     report(settings)
+    // On the pairing connection: a new one may not be accepted once the window closes.
+    if case .editingNetwork = flow.state, let ssid = options["ssid"] {
+      try await write(ssid, flow, settings)
+      return
+    }
+    // A controller holding a network starts its station once Pair closes the window.
+    if flow.joinsHeldNetwork {
+      timeline.say("the controller holds a network: watching it join")
+      await watchJoin(flow, for: try options.seconds("watch", default: 60))
+    }
     await flow.reset()
   }
 
@@ -338,11 +359,16 @@ func label(_ state: SetupFlow.State) -> String {
 
   func write() async throws {
     guard let ssid = options["ssid"] else { throw BenchError("write needs --ssid") }
+    let (flow, settings) = try await resumed()
+    report(settings)
+    try await write(ssid, flow, settings)
+  }
+
+  /// Write `ssid` on the open session, watch the join, then end the session.
+  func write(_ ssid: String, _ flow: SetupFlow, _ settings: NetworkSettings) async throws {
     let name = options["passphrase-env"] ?? "ORIGIN89_WIFI_PASSPHRASE"
     let passphrase = BenchFiles.secret(name, file: "wifi-passphrase")
     let watchFor = try options.seconds("watch", default: 60)
-    let (flow, settings) = try await resumed()
-    report(settings)
     var draft = NetworkDraft(
       ssid: ssid, settings: settings, region: Locale.current.region?.identifier)
     draft.passphrase = passphrase ?? ""
@@ -359,18 +385,44 @@ func label(_ state: SetupFlow.State) -> String {
       await flow.reset()
       throw BenchError("write stopped")
     }
-    await watch(flow, for: watchFor) { flow in
+    await watchJoin(flow, for: watchFor)
+    await flow.reset()
+  }
+
+  /// Follow the join and the move to Wi-Fi until either has an outcome.
+  func watchJoin(_ flow: SetupFlow, for limit: Duration) async {
+    await watch(flow, for: limit) { flow in
       if case .failed = flow.state { return true }
       switch flow.join {
       // A join is followed by the switch to Wi-Fi.
       case .joined:
         return options.has("bluetooth-only")
           || (!flow.isSwitchingToWiFi && (flow.link != .bluetooth || flow.wifiUnavailable != nil))
-      case .failed, .noAnswer, .connectionLost: return true
+      case .failed, .noAnswer: return true
+      // A Wi-Fi search may follow a lost Bluetooth link.
+      case .connectionLost: return !flow.isSwitchingToWiFi
       case .idle, .waiting: return false
       }
     }
     timeline.say("final state \(label(flow.state)), join \(flow.join), link \(link(flow))")
+  }
+
+  /// Leave the controller with no network, as a unit that was never set up.
+  func clear() async throws {
+    let (flow, settings) = try await resumed()
+    report(settings)
+    guard let country = settings.country, let hostname = settings.hostname else {
+      await flow.reset()
+      throw BenchError("not cleared: the controller holds no country or hostname to keep")
+    }
+    timeline.say("clearing the network")
+    await flow.writeNetwork(
+      NetworkChange(ssid: nil, passphrase: nil, country: country, hostname: hostname))
+    timeline.say("state \(label(flow.state))")
+    guard case .written = flow.state else {
+      await flow.reset()
+      throw BenchError("not cleared")
+    }
     await flow.reset()
   }
 

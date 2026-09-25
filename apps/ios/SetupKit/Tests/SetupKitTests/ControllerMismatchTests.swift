@@ -103,8 +103,10 @@ private struct PeerFactory: ControllerClientFactory {
   #expect(flow.state == .failed(.controllerMismatch, .connecting))
   await flow.retry()
   #expect(flow.state == .openWindow)
-  #expect(driver.scans == [[], [wrong], []])
-  #expect(driver.peer == wrong)
+  // Bluetooth opens again once the window is open, excluding nobody.
+  #expect(driver.scans == [[], [wrong]])
+  await flow.confirmWindowOpened()
+  #expect(Array(driver.scans.prefix(3)) == [[], [wrong], []])
   #expect(driver.mostConnections == 1)
 }
 
@@ -135,6 +137,6 @@ private struct PeerFactory: ControllerClientFactory {
   #expect(driver.connections == 0)
   await flow.retry()
   #expect(flow.state == .openWindow)
-  #expect(driver.connections == 1)
+  #expect(driver.connections == 0)
   #expect(driver.mostConnections == 1)
 }

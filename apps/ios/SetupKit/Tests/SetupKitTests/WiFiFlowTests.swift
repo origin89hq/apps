@@ -43,8 +43,9 @@ private actor WiFiClient: ControllerClient {
 
   init(
     reportsWiFi: Bool = true, scans: [NetworkScan] = [], statuses: [WiFiStatus] = [],
+    // No network held: after Pair the person chooses one.
     settings: NetworkSettings = NetworkSettings(
-      version: 7, ssid: "home", passphraseSet: true, country: "CA", hostname: "unit")
+      version: 7, ssid: nil, passphraseSet: false, country: "CA", hostname: "unit")
   ) {
     self.reportsWiFi = reportsWiFi
     self.scans = scans
@@ -77,8 +78,15 @@ private actor WiFiClient: ControllerClient {
     if let helloFailure { throw helloFailure }
     return SessionReport(reportsWiFi: reportsWiFi)
   }
+  /// The next read fails with this, once.
+  var readFailure: SetupFailure?
+  func failNextRead(with failure: SetupFailure) { readFailure = failure }
   func readNetwork() async throws(SetupFailure) -> NetworkSettings {
     calls.append(.read)
+    if let failure = readFailure {
+      readFailure = nil
+      throw failure
+    }
     return settings
   }
   func writeNetwork(_ change: NetworkChange, expectedVersion: UInt32) async throws(SetupFailure)
@@ -546,4 +554,99 @@ private let joined8 = WiFiStatus(
   #expect(NetworkSecurity.wpa3Personal.isJoinable)
   #expect(!NetworkSecurity.open.isJoinable)
   #expect(!NetworkSecurity.other.isJoinable)
+}
+
+// MARK: - A controller that holds a network when it pairs
+
+private let home = NetworkSettings(
+  version: 7, ssid: "home", passphraseSet: true, country: "CA", hostname: "unit")
+
+/// Pair closes the window and the station joins the network the controller
+/// holds: the flow watches that join and writes nothing.
+@Test @MainActor func pairingAControllerThatHoldsANetworkWatchesItJoin() async throws {
+  let joined7 = WiFiStatus(section: 7, radio: (version: 7, state: .joined(address: "10.0.0.9")))
+  let client = WiFiClient(statuses: [joined7], settings: home)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let flow = SetupFlow(
+    factory: Factory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { Transport() }, clock: clock)
+  try flow.submitCode("valid")
+  await flow.connect()
+  await flow.confirmWindowOpened()
+  #expect(flow.state == .written(7))
+  #expect(flow.joinsHeldNetwork)
+  await settle { flow.join != .waiting }
+  #expect(flow.join == .joined(address: "10.0.0.9"))
+  #expect(await client.calls == [.discover, .pair, .hello, .read, .status])
+  // The person may still choose another network.
+  await flow.changeNetwork()
+  #expect(flow.state == .editingNetwork(home))
+}
+
+/// Without Wi-Fi status reads there is no join to watch, and a network held
+/// without its passphrase cannot be joined: both go to the network form.
+@Test(arguments: [
+  (
+    true,
+    NetworkSettings(version: 7, ssid: "home", passphraseSet: false, country: "CA", hostname: "unit")
+  ),
+  (false, home),
+])
+@MainActor func aHeldNetworkThatCannotBeWatchedGoesToTheForm(
+  reportsWiFi: Bool, settings: NetworkSettings
+) async throws {
+  let client = WiFiClient(reportsWiFi: reportsWiFi, settings: settings)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let flow = SetupFlow(
+    factory: Factory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { Transport() }, clock: clock)
+  try flow.submitCode("valid")
+  await flow.connect()
+  await flow.confirmWindowOpened()
+  #expect(flow.state == .editingNetwork(settings))
+  #expect(!flow.joinsHeldNetwork)
+  #expect(flow.join == .idle)
+}
+
+/// Once the person writes a network, the written version is theirs.
+@Test @MainActor func writingANetworkIsNotTheHeldOne() async throws {
+  let client = WiFiClient(statuses: [joining8])
+  let clock = PollClock()
+  defer { clock.finish() }
+  let (flow, _) = try await editing(client, clock)
+  #expect(!flow.joinsHeldNetwork)
+  await flow.writeNetwork(
+    NetworkChange(ssid: "cabin", passphrase: "correct horse", country: "CA", hostname: "unit"))
+  #expect(flow.state == .written(8))
+  #expect(!flow.joinsHeldNetwork)
+}
+
+/// The link drops between Pair and the first read: the read on the next
+/// connection still finds the network held since pairing, and watches it.
+@Test @MainActor func aHeldNetworkReadAfterAReconnectIsStillWatched() async throws {
+  let joined7 = WiFiStatus(section: 7, radio: (version: 7, state: .joined(address: "10.0.0.9")))
+  let client = WiFiClient(statuses: [joined7], settings: home)
+  await client.failNextRead(with: .connectionDropped)
+  let clock = PollClock()
+  defer { clock.finish() }
+  let flow = SetupFlow(
+    factory: Factory(client: client), store: NoEnrolmentStore(),
+    transportFactory: { Transport() }, clock: clock)
+  try flow.submitCode("valid")
+  await flow.connect()
+  await flow.confirmWindowOpened()
+  #expect(flow.state == .failed(.connectionDropped, .connecting))
+  await flow.retry()
+  #expect(flow.state == .written(7))
+  #expect(flow.joinsHeldNetwork)
+  await settle { flow.join != .waiting }
+  #expect(flow.join == .joined(address: "10.0.0.9"))
+  #expect(
+    await client.calls == [.discover, .pair, .hello, .read, .discover, .hello, .read, .status])
+
+  // Only the first read after Pair: reading again goes to the form.
+  await flow.changeNetwork()
+  #expect(flow.state == .editingNetwork(home))
 }
