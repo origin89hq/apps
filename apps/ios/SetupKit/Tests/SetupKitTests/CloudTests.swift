@@ -209,6 +209,29 @@ private final class Sheet: @unchecked Sendable {
   #expect(store.calls.isEmpty)
 }
 
+/// The person switched accounts while the first request was out: the retry
+/// must not delete the account that signed in since.
+@Test @MainActor func anAccountSwitchDuringTheRequestDeletesNothing() async throws {
+  let other = AccountUser(id: AccountID("user_01B"), email: "a@example.com")
+  let setup = try setup(
+    cloud: [.status(401, failure("reauthentication_required"))],
+    auth: [.status(200, sessionJSON(id: "user_01B", access: token("b")))])
+  let store = Pairings()
+  let sheet = Sheet()
+  let deletion = Task {
+    try await setup.cloud.deleteAccount(
+      pairings: .forget, store: store, authenticate: sheet.authenticate)
+  }
+  while setup.cloudHTTP.requests.isEmpty { await Task.yield() }
+  try setup.account.signOut()
+  try await setup.account.signIn(using: sheet.authenticate)
+  #expect(setup.account.status == .signedIn(other))
+  await #expect(throws: CloudError.account(.differentAccount)) { try await deletion.value }
+  #expect(setup.cloudHTTP.requests.count == 1)
+  #expect(setup.account.status == .signedIn(other))
+  #expect(store.calls.isEmpty)
+}
+
 @Test @MainActor func cancellingTheNewSignInDeletesNothing() async throws {
   let setup = try setup(cloud: [.status(401, failure("reauthentication_required"))])
   let store = Pairings()

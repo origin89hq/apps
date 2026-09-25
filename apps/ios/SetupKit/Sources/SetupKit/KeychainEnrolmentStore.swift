@@ -28,24 +28,37 @@ public struct KeychainEnrolmentStore: EnrolmentStore {
     return result as? Data
   }
 
+  /// Replaces an existing entry in place, so a failed save leaves the older
+  /// one as it was.
   public func save(_ enrolment: Data, deviceID: String) throws {
-    try remove(deviceID: deviceID)
-    var attributes = item(deviceID)
-    attributes[kSecValueData as String] = enrolment
-    attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-    let added = SecItemAdd(attributes as CFDictionary, nil)
+    let changes: [String: Any] = [
+      kSecValueData as String: enrolment,
+      kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+    ]
+    let updated = SecItemUpdate(item(deviceID) as CFDictionary, changes as CFDictionary)
+    if updated == errSecSuccess { return }
+    guard updated == errSecItemNotFound else { throw Failure(status: updated) }
+    let added = SecItemAdd(item(deviceID).merging(changes) { $1 } as CFDictionary, nil)
     guard added == errSecSuccess else { throw Failure(status: added) }
   }
 
   public func remove(deviceID: String) throws { try delete(item(deviceID)) }
 
-  /// The `device_id` of every enrolment under this service, sorted.
-  public func deviceIDs() -> [String] {
+  /// The `device_id` of every enrolment under this service, sorted; none
+  /// when the Keychain cannot be read.
+  public func deviceIDs() -> [String] { (try? storedDeviceIDs()) ?? [] }
+
+  /// The `device_id` of every enrolment under this service, sorted. Throws
+  /// when the Keychain cannot be read, as while the phone is locked, rather
+  /// than answering none.
+  public func storedDeviceIDs() throws -> [String] {
     var query = items()
     query[kSecMatchLimit as String] = kSecMatchLimitAll
     query[kSecReturnAttributes as String] = true
     var result: CFTypeRef?
-    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return [] }
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return [] }
+    guard status == errSecSuccess else { throw Failure(status: status) }
     return (result as? [[String: Any]] ?? []).compactMap {
       $0[kSecAttrAccount as String] as? String
     }

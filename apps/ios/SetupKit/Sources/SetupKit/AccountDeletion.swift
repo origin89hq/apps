@@ -37,11 +37,14 @@ extension CloudClient {
     do {
       try await send(.delete, "/v1/account")
     } catch .reauthenticationRequired {
+      // Another account signed in meanwhile: never delete it instead.
+      guard account.owner == owner else { throw .account(.differentAccount) }
       do {
         try await account.reauthenticate(using: authenticate)
       } catch {
         throw .account(error)
       }
+      guard account.owner == owner else { throw .account(.differentAccount) }
       try await send(.delete, "/v1/account")
     }
     // Deleted in the cloud: the person may have signed out meanwhile.
@@ -78,7 +81,7 @@ public struct KeychainAccountPairings: AccountPairingStore {
   public func keep(_ owner: AccountID) throws {
     let own = KeychainEnrolmentStore(owner: owner)
     let signedOut = KeychainEnrolmentStore()
-    for deviceID in own.deviceIDs() {
+    for deviceID in try own.storedDeviceIDs() {
       // Unreadable, as while the phone is locked: keep it rather than lose it.
       guard let enrolment = own.load(deviceID: deviceID) else {
         throw KeychainEnrolmentStore.Failure(status: errSecInteractionNotAllowed)
