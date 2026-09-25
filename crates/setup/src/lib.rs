@@ -3,7 +3,7 @@
 //! `SetConfig` of the network section, `WifiScan` and `WifiStatus` where the
 //! controller answers them, and an optional signed `Time`, the BLE GATT
 //! fragmentation that carries its messages, and the WebSocket URL that
-//! carries them on the site network.
+//! carries them on the site network, with the DNS-SD names that find it there.
 //!
 //! The wire format is the `km43` crate, the one the controller itself speaks.
 //! Keys and session state stay in Rust; Swift sends and receives opaque frames

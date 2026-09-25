@@ -32,7 +32,8 @@ struct Origin89App: App {
       transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
       lastController: DefaultsLastController(),
       webSocketFactory: { WebSocketTransport.km43(address: $0) },
-      addresses: DefaultsControllerAddresses())
+      addresses: DefaultsControllerAddresses(),
+      browser: NetworkControllerBrowser.km43())
   }
 
   var body: some Scene {

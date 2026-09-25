@@ -213,7 +213,11 @@ func label(_ state: SetupFlow.State) -> String {
 
   func flow(resuming deviceID: String?) -> SetupFlow {
     var webSocket: (@MainActor @Sendable (String) -> (any FrameTransport)?)?
-    if !options.has("bluetooth-only") { webSocket = { WebSocketTransport.km43(address: $0) } }
+    var browser: NetworkControllerBrowser?
+    if !options.has("bluetooth-only") {
+      webSocket = { WebSocketTransport.km43(address: $0) }
+      browser = .km43()
+    }
     return SetupFlow(
       factory: RustControllerClientFactory(
         label: "Origin89 bench \(Host.current().localizedName ?? "Mac")"),
@@ -221,7 +225,8 @@ func label(_ state: SetupFlow.State) -> String {
       transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
       lastController: BenchLastController(deviceID),
       webSocketFactory: webSocket,
-      addresses: FileControllerAddresses())
+      addresses: FileControllerAddresses(),
+      browser: browser)
   }
 
   /// Print state, join and scan changes until `done` holds or `limit` passes.
