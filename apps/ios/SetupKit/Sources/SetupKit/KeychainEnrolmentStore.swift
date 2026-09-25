@@ -39,6 +39,19 @@ public struct KeychainEnrolmentStore: EnrolmentStore {
 
   public func remove(deviceID: String) throws { try delete(item(deviceID)) }
 
+  /// The `device_id` of every enrolment under this service, sorted.
+  public func deviceIDs() -> [String] {
+    var query = items()
+    query[kSecMatchLimit as String] = kSecMatchLimitAll
+    query[kSecReturnAttributes as String] = true
+    var result: CFTypeRef?
+    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return [] }
+    return (result as? [[String: Any]] ?? []).compactMap {
+      $0[kSecAttrAccount as String] as? String
+    }
+    .sorted()
+  }
+
   /// Every item under this service, including ones a previous install of
   /// the app left: Keychain items outlive an app delete.
   public func removeAll() throws { try delete(items()) }

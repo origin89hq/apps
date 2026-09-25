@@ -3,3 +3,8 @@
 
 WORKOS_CLIENT_ID[config=Debug] = client_01M3C9M944Y53VA9PJRCW8T5S6
 WORKOS_CLIENT_ID[config=Release] = client_01M3CC0Q23FPHK50YW1WXCNZ3S
+
+// The Origin89 cloud for the same environment: it accepts tokens only from its
+// own WorkOS client. Debug has none until a staging Worker is deployed, so
+// Debug builds cannot delete an account. `$()` keeps `//` from starting a comment.
+CLOUD_BASE_URL[config=Release] = https:/$()/cloud.origin89.com

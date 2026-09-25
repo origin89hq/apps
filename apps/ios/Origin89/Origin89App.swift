@@ -7,6 +7,7 @@ import os
 struct Origin89App: App {
   @State private var account: Account
   @State private var flow: SetupFlow
+  private let cloud: CloudClient?
 
   @MainActor init() {
     Self.clearPreviousInstall()
@@ -14,6 +15,7 @@ struct Origin89App: App {
       client: Self.authKit.map { AuthKitClient(configuration: $0) },
       store: KeychainAccountSessionStore())
     _account = State(initialValue: account)
+    cloud = Self.cloudConfiguration.map { CloudClient(configuration: $0, account: account) }
     _flow = State(initialValue: Self.makeFlow(owner: account.owner))
   }
 
@@ -42,6 +44,19 @@ struct Origin89App: App {
     return clientID.flatMap { AuthKitConfiguration(clientID: $0) }
   }
 
+  private static var cloudConfiguration: CloudConfiguration? {
+    let baseURL = Bundle.main.object(forInfoDictionaryKey: "CloudBaseURL") as? String
+    return baseURL.flatMap { CloudConfiguration(baseURL: $0) }
+  }
+
+  private static func lastController(owner: AccountID?) -> DefaultsLastController {
+    DefaultsLastController(
+      key: owner.map { "setup.lastController.\($0.rawValue)" } ?? "setup.lastController")
+  }
+
+  private static let pairings = KeychainAccountPairings(
+    signedOutLast: lastController(owner: nil), accountLast: { lastController(owner: $0) })
+
   /// The flow for `owner`'s enrolments: signed out, those made signed out;
   /// signed in, the account's own too. Each keeps its own last controller.
   @MainActor private static func makeFlow(owner: AccountID?) -> SetupFlow {
@@ -50,8 +65,7 @@ struct Origin89App: App {
       owner.map {
         AccountEnrolmentStore(own: KeychainEnrolmentStore(owner: $0), signedOut: signedOut)
       } ?? signedOut
-    let lastController = DefaultsLastController(
-      key: owner.map { "setup.lastController.\($0.rawValue)" } ?? "setup.lastController")
+    let lastController = lastController(owner: owner)
     return SetupFlow(
       factory: RustControllerClientFactory(label: DeviceLabel.current),
       store: store,
@@ -64,7 +78,7 @@ struct Origin89App: App {
 
   var body: some Scene {
     WindowGroup {
-      SetupView(flow: flow, account: account)
+      SetupView(flow: flow, account: account, cloud: cloud, pairings: Self.pairings)
         .id(ObjectIdentifier(flow))
         .task { await account.refreshIfExpired() }
         // Another account sees other enrolments: close this flow's connection

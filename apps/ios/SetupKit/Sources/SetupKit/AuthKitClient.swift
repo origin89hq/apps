@@ -88,8 +88,12 @@ public struct AuthKitClient: Sendable {
   }
 
   /// The hosted AuthKit page, which offers every sign-in method enabled in
-  /// WorkOS. Its redirect carries `code` and `state`.
-  func authorizationURL(challenge: String, state: String) -> URL? {
+  /// WorkOS. Its redirect carries `code` and `state`. With `reauthenticating`,
+  /// AuthKit asks that person to sign in again even with a live session
+  /// (`max_age=0`), which starts a new one.
+  func authorizationURL(challenge: String, state: String, reauthenticating email: String? = nil)
+    -> URL?
+  {
     var components = URLComponents(
       url: configuration.apiBase.appending(path: "user_management/authorize"),
       resolvingAgainstBaseURL: false)
@@ -102,6 +106,11 @@ public struct AuthKitClient: Sendable {
       URLQueryItem(name: "code_challenge_method", value: "S256"),
       URLQueryItem(name: "state", value: state),
     ]
+    if let email {
+      components?.queryItems? += [
+        URLQueryItem(name: "max_age", value: "0"), URLQueryItem(name: "login_hint", value: email),
+      ]
+    }
     return components?.url
   }
 
