@@ -9,9 +9,11 @@ import SetupKit
 let usage = """
   usage: setup-bench <command> [options]
 
-    pair [--window-open]   Pair with the controller whose code is in $ORIGIN89_SETUP_CODE
+    pair [--window-open] [--watch SECONDS]
+                           Pair with the controller whose code is in $ORIGIN89_SETUP_CODE
                            and read its network. Without --window-open it waits for Enter
-                           once the pairing window is open on the panel.
+                           once the pairing window is open on the panel. A controller that
+                           holds a network joins it: watch that (default 60 s).
     read                   Continue from the kept enrolment and read the network section.
     scan                   Read, then run a Wi-Fi scan to its end.
     write --ssid NAME [--country CC] [--hostname NAME] [--watch SECONDS]
@@ -282,12 +284,22 @@ func label(_ state: SetupFlow.State) -> String {
       }
       await flow.confirmWindowOpened()
     }
-    guard case .editingNetwork(let settings) = flow.state, let deviceID = flow.controller?.deviceID
-    else { throw BenchError("pairing stopped: \(label(flow.state))") }
+    guard let deviceID = flow.controller?.deviceID, let settings = flow.network else {
+      throw BenchError("pairing stopped: \(label(flow.state))")
+    }
+    switch flow.state {
+    case .editingNetwork, .written: break
+    default: throw BenchError("pairing stopped: \(label(flow.state))")
+    }
     try BenchFiles.ensureDirectory()
     try Data(deviceID.utf8).write(to: BenchFiles.lastDevice, options: [.atomic])
     timeline.say("paired with \(deviceID)")
     report(settings)
+    // A controller holding a network starts its station once Pair closes the window.
+    if flow.joinsHeldNetwork {
+      timeline.say("the controller holds a network: watching it join")
+      await watchJoin(flow, for: try options.seconds("watch", default: 60))
+    }
     await flow.reset()
   }
 
@@ -359,7 +371,13 @@ func label(_ state: SetupFlow.State) -> String {
       await flow.reset()
       throw BenchError("write stopped")
     }
-    await watch(flow, for: watchFor) { flow in
+    await watchJoin(flow, for: watchFor)
+    await flow.reset()
+  }
+
+  /// Follow the join and the move to Wi-Fi until either has an outcome.
+  func watchJoin(_ flow: SetupFlow, for limit: Duration) async {
+    await watch(flow, for: limit) { flow in
       if case .failed = flow.state { return true }
       switch flow.join {
       // A join is followed by the switch to Wi-Fi.
@@ -371,7 +389,6 @@ func label(_ state: SetupFlow.State) -> String {
       }
     }
     timeline.say("final state \(label(flow.state)), join \(flow.join), link \(link(flow))")
-    await flow.reset()
   }
 
   func hold() async throws {

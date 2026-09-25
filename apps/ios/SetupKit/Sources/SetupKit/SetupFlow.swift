@@ -35,6 +35,12 @@ import Observation
 /// Hello and reads its network, whether or not a network was written, until
 /// the person starts over or the kept enrolment stops working.
 ///
+/// Pairing follows the controller's window: Bluetooth opens only once the
+/// person has opened it, since a controller whose station has joined
+/// advertises only while the window is open. `Pair` closes the window, and a
+/// controller holding a network starts its station then: the flow watches
+/// that join instead of asking for a network to write.
+///
 /// On a controller that reports Wi-Fi (P-216) the flow also reads what its
 /// radio hears while the network is edited, and watches the join after a
 /// write. Both run in one background task that every other step stops and
@@ -51,6 +57,11 @@ import Observation
 /// each time whether it is this controller (P-225); an address where Hello
 /// succeeds is kept. When Wi-Fi cannot be used the session stays on, or falls
 /// back to, Bluetooth, and `wifiUnavailable` says why.
+///
+/// A station starting may drop the Bluetooth link. When that ends the join
+/// watch, or takes the answer to a write, the flow looks for the controller
+/// on Wi-Fi for up to `wifiLimit` and continues there; a write whose answer
+/// was lost counts once the section read over Wi-Fi holds it.
 @MainActor @Observable public final class SetupFlow {
   /// After a write, what the radio did with it.
   public enum JoinWatch: Sendable, Equatable {
@@ -68,6 +79,9 @@ import Observation
   static let scanLimit: Duration = .seconds(20)
   /// How long a write's join is watched.
   static let joinLimit: Duration = .seconds(60)
+  /// How long the flow looks for the controller on Wi-Fi after Bluetooth
+  /// drops while its station starts.
+  static let wifiLimit: Duration = .seconds(30)
 
   /// The link a session runs over.
   public enum Link: Sendable, Equatable {
@@ -95,6 +109,17 @@ import Observation
         "Another controller answered at this controller's address, so the phone stays on Bluetooth."
       case .refused:
         "The controller did not accept this phone over Wi-Fi, so it stays on Bluetooth."
+      }
+    }
+    /// Why Wi-Fi failed, for when Bluetooth is gone too.
+    public var reason: String {
+      switch self {
+      case .notReachable:
+        "This phone could not reach the controller over Wi-Fi. The phone must be on the same network as the controller."
+      case .localNetworkDenied:
+        "Origin89 is not allowed to use the local network. Turn on Local Network for Origin89 in Settings, then try again."
+      case .otherController: "Another controller answered at this controller's address."
+      case .refused: "The controller did not accept this phone over Wi-Fi."
       }
     }
   }
@@ -164,6 +189,12 @@ import Observation
     guard transportActive else { return nil }
     if let wifi { return .wifi(address: wifi.address) }
     return .bluetooth
+  }
+  /// The controller held a network when it paired, so the flow watches it
+  /// join instead of writing one. False once the person writes a network.
+  public var joinsHeldNetwork: Bool {
+    guard let network, let writtenVersion else { return false }
+    return network.version == writtenVersion
   }
   /// The network version this session wrote, kept across Time failures.
   public var writtenVersion: UInt32? {
@@ -284,7 +315,9 @@ import Observation
     if greets, webSocketFactory != nil, let deviceID = controller?.deviceID ?? lastDeviceID {
       // Active from here, so a suspend during the attempt ends it.
       transportActive = true
+      isSwitchingToWiFi = true
       let opened = await findWiFi(deviceID: deviceID, operation)
+      isSwitchingToWiFi = false
       guard generation == operation else {
         if let opened { await Self.close(opened.link) }
         return
@@ -299,26 +332,35 @@ import Observation
       transportActive = false
       SetupLog.flow.notice("Wi-Fi is unavailable: connecting over Bluetooth")
     }
+    // Pairing needs the window first; `confirmWindowOpened()` connects.
+    if resume == .pair, !greets {
+      state = .openWindow
+      return
+    }
+    guard await openBluetooth(operation) else { return }
+    isConnecting = false
+    await openSession(operation)
+  }
+
+  /// Open the Bluetooth transport. False when the open failed, with the flow
+  /// failed, or when the flow moved on meanwhile.
+  private func openBluetooth(_ operation: Int) async -> Bool {
+    guard let transport else { return false }
     transportActive = true
     do {
       try await transport.open()
     } catch {
       // A failed open leaves nothing connected.
-      if generation == operation { transportActive = false }
-      guard generation == operation else { return }
+      guard generation == operation else { return false }
+      transportActive = false
       await fail(Self.failure(error))
-      return
+      return false
     }
     guard generation == operation else {
       await closeTransport()
-      return
+      return false
     }
-    if resume == .pair, !greets {
-      state = .openWindow
-    } else {
-      isConnecting = false
-      await openSession(operation)
-    }
+    return true
   }
 
   public func confirmWindowOpened() async {
@@ -332,8 +374,15 @@ import Observation
       self.state = .failed(.windowClosed, .openWindow)
       await self.close()
     }
+    state = .discovering
+    // The window is open now, so the controller advertises. A session whose
+    // kept enrolment was lost is connected already.
+    if !transportActive {
+      isConnecting = true
+      guard await openBluetooth(operation) else { return }
+      isConnecting = false
+    }
     do {
-      state = .discovering
       let discovered = try await discover(client, operation)
       guard generation == operation else { return }
       controller = discovered
@@ -354,7 +403,7 @@ import Observation
       let report = try await client.hello()
       guard generation == operation else { return }
       reportsWiFi = report.reportsWiFi
-      await readNetwork()
+      await readNetwork(afterPair: true)
     } catch {
       guard generation == operation else { return }
       deadlineTask?.cancel()
@@ -455,7 +504,10 @@ import Observation
     }
   }
 
-  private func readNetwork() async {
+  /// Read the network section. Right after `Pair`, a controller holding a
+  /// network is starting its station: the flow watches that join as if the
+  /// network were just written.
+  private func readNetwork(afterPair: Bool = false) async {
     guard let client = session else { return }
     let operation = generation
     state = .readingNetwork
@@ -466,7 +518,14 @@ import Observation
         "network section version \(settings.version, privacy: .public), network held \(settings.ssid != nil, privacy: .public), country held \(settings.country != nil, privacy: .public)"
       )
       network = settings
-      state = .editingNetwork(settings)
+      if afterPair, reportsWiFi, settings.ssid != nil, settings.passphraseSet {
+        SetupLog.flow.info("the controller holds a network: watching its station join")
+        resume = .written(settings.version)
+        state = .written(settings.version)
+        watchJoin(settings.version)
+      } else {
+        state = .editingNetwork(settings)
+      }
     } catch {
       guard generation == operation else { return }
       await fail(error)
@@ -490,8 +549,46 @@ import Observation
       if reportsWiFi, change.ssid != nil { watchJoin(version) }
     } catch {
       guard generation == operation else { return }
+      guard await !confirmOverWiFi(change, after: settings, error) else { return }
       await fail(error)
     }
+  }
+
+  /// A write whose answer was lost with the Bluetooth link may have landed:
+  /// the station it starts can drop the link. Look for the controller on
+  /// Wi-Fi and read the section there; a newer version holding the SSID
+  /// written is this write, and the flow continues from it over Wi-Fi. True
+  /// when the flow went on without the failure: the write was confirmed, or
+  /// the flow moved on meanwhile.
+  private func confirmOverWiFi(
+    _ change: NetworkChange, after settings: NetworkSettings, _ failure: SetupFailure
+  ) async -> Bool {
+    guard failure == .connectionDropped || failure == .timedOut, reportsWiFi,
+      let ssid = change.ssid, wifi == nil, webSocketFactory != nil,
+      let deviceID = controller?.deviceID
+    else { return false }
+    SetupLog.flow.notice("the write's answer was lost: confirming it over Wi-Fi")
+    await close()
+    let operation = generation
+    guard let opened = await reachWiFi(deviceID: deviceID, operation) else {
+      return generation != operation
+    }
+    guard await adopt(opened, operation) else { return true }
+    let held: NetworkSettings
+    do {
+      held = try await opened.link.client.readNetwork()
+    } catch {
+      return generation != operation
+    }
+    guard generation == operation else { return true }
+    guard held.version > settings.version, held.ssid == ssid else {
+      SetupLog.flow.notice("the section read over Wi-Fi does not hold the write")
+      return false
+    }
+    resume = .written(held.version)
+    state = .written(held.version)
+    watchJoin(held.version)
+    return true
   }
   /// The optional signed Time. Success finishes setup and closes the
   /// connection. A refusal keeps the session for another try; a lost
@@ -619,8 +716,83 @@ import Observation
       )
       // Before closing, so the watch never reads as idle in between.
       join = .connectionLost
+      // A station starting may have dropped Bluetooth: look on Wi-Fi. A stop
+      // leaves the next step to reconnect. Read before `close()` cancels this task.
+      guard wifi == nil, !Task.isCancelled, webSocketFactory != nil,
+        let deviceID = controller?.deviceID
+      else {
+        await close()
+        return
+      }
+      // Set first, so the search never reads as over in between.
+      isSwitchingToWiFi = true
+      let next = generation + 1
       await close()
+      // A suspend or step during the close ends the search before it starts.
+      guard generation == next else {
+        isSwitchingToWiFi = false
+        return
+      }
+      join = .waiting
+      backgroundTask = Task { [weak self] in
+        await self?.continueOverWiFi(version, deviceID: deviceID, next)
+      }
     }
+  }
+
+  /// Bluetooth ended during the join watch. Find the controller on Wi-Fi and
+  /// watch the join there, or leave the join `connectionLost` with the reason
+  /// in `wifiUnavailable`.
+  private func continueOverWiFi(_ version: UInt32, deviceID: String, _ operation: Int) async {
+    let opened = await reachWiFi(deviceID: deviceID, operation)
+    guard generation == operation else {
+      if let opened { await Self.close(opened.link) }
+      return
+    }
+    backgroundTask = nil
+    guard let opened else {
+      join = .connectionLost
+      return
+    }
+    guard await adopt(opened, operation) else { return }
+    join = .idle
+    // Stopped meanwhile: the step that stopped it goes on over Wi-Fi.
+    if !Task.isCancelled { watchJoin(version) }
+  }
+
+  /// Look for the controller on Wi-Fi again every `pollInterval`, up to
+  /// `wifiLimit`, with nothing else open. The link counts as active meanwhile,
+  /// so a suspend ends the search. Nil when no attempt worked or the flow
+  /// moved on.
+  private func reachWiFi(deviceID: String, _ operation: Int) async -> WiFiSession? {
+    transportActive = true
+    isSwitchingToWiFi = true
+    defer { isSwitchingToWiFi = false }
+    let deadline = clock.now + Self.wifiLimit
+    while generation == operation {
+      if let opened = await findWiFi(deviceID: deviceID, operation) { return opened }
+      guard generation == operation, !Task.isCancelled, clock.now < deadline else { break }
+      do { try await clock.sleep(until: clock.now + Self.pollInterval) } catch { break }
+    }
+    if generation == operation {
+      SetupLog.flow.notice("the controller was not found on Wi-Fi")
+      transportActive = false
+    }
+    return nil
+  }
+
+  /// Make an opened Wi-Fi session the flow's link. False, with it closed,
+  /// when the flow moved on.
+  private func adopt(_ opened: WiFiSession, _ operation: Int) async -> Bool {
+    guard generation == operation, transportActive else {
+      await Self.close(opened.link)
+      return false
+    }
+    wifi = opened.link
+    controller = opened.found
+    reportsWiFi = opened.report.reportsWiFi
+    SetupLog.flow.info("the session continues over Wi-Fi")
+    return true
   }
 
   /// Watch the join of the written network again, reconnecting if needed. A
@@ -684,9 +856,11 @@ import Observation
   private func switchToWiFi(_ operation: Int) async {
     guard wifi == nil, transportActive, let deviceID = controller?.deviceID else { return }
     // Its own task, so stopping the background task does not cut it short.
+    isSwitchingToWiFi = true
     let opened = await Task { [weak self] in
       await self?.findWiFi(deviceID: deviceID, operation)
     }.value
+    isSwitchingToWiFi = false
     guard let opened else {
       SetupLog.flow.notice("staying on Bluetooth")
       return
@@ -712,8 +886,6 @@ import Observation
   /// alone.
   private func findWiFi(deviceID: String, _ operation: Int) async -> WiFiSession? {
     guard webSocketFactory != nil else { return nil }
-    isSwitchingToWiFi = true
-    defer { isSwitchingToWiFi = false }
     var tried: Set<String> = []
     func attempt(_ address: String) async -> WiFiSession? {
       guard generation == operation, tried.insert(address).inserted else { return nil }

@@ -308,28 +308,40 @@ private struct Factory: ControllerClientFactory {
   #expect(await client.calls == [.discover, .pair])
 }
 
+/// Pairing opens Bluetooth only once the window is open: a controller whose
+/// station has joined advertises only then.
+@Test @MainActor func bluetoothOpensOnlyOnceTheWindowIsOpen() async throws {
+  let transport = FakeTransport()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(FakeClient(), clock: clock, transport: transport)
+  #expect(await transport.opens == 0)
+  await flow.confirmWindowOpened()
+  #expect(await transport.opens == 1)
+}
+
 @Test @MainActor func bluetoothUnavailableDuringConnection() async throws {
-  let flow = SetupFlow(
-    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
-    transportFactory: { FakeTransport(failure: .unreachable) }
-  )
-  try flow.submitCode("valid")
-  #expect(flow.state == .connecting)
-  await flow.connect()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(
+    FakeClient(), clock: clock, transport: FakeTransport(failure: .unreachable))
+  await flow.confirmWindowOpened()
   #expect(flow.state == .failed(.bluetoothUnavailable, .connecting))
+  // The retry goes back to the window step, still without a connection.
   await flow.retry()
+  #expect(flow.state == .openWindow)
+  await flow.confirmWindowOpened()
   #expect(flow.state == .failed(.bluetoothUnavailable, .connecting))
 }
 
 /// A controller was found but its link never became ready: not reported as
 /// Bluetooth being unavailable.
 @Test @MainActor func aLinkThatIsNotReadyIsReportedAsSuch() async throws {
-  let flow = SetupFlow(
-    factory: Factory(fake: FakeClient()), store: NoEnrolmentStore(),
-    transportFactory: { FakeTransport(failure: .notReady) }
-  )
-  try flow.submitCode("valid")
-  await flow.connect()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(
+    FakeClient(), clock: clock, transport: FakeTransport(failure: .notReady))
+  await flow.confirmWindowOpened()
   #expect(flow.state == .failed(.linkNotReady, .connecting))
 }
 
@@ -484,7 +496,7 @@ private struct Factory: ControllerClientFactory {
   #expect(await transport.closes == 1)
   await flow.retry()
   #expect(flow.state == .openWindow)
-  #expect(await transport.opens == 2)
+  #expect(await transport.opens == 1)
   #expect(await transport.mostOpen == 1)
   clock.finish()
 }
@@ -519,20 +531,18 @@ private struct Factory: ControllerClientFactory {
   #expect(await transport.mostOpen == 1)
 }
 
-@Test @MainActor func backgroundWithTheWindowStepSuspendsAndReturnsToIt() async throws {
+/// The window step holds no connection, so leaving the app keeps it.
+@Test @MainActor func backgroundWithTheWindowStepKeepsIt() async throws {
   let client = FakeClient()
   let transport = FakeTransport()
   let clock = TestClock()
   defer { clock.finish() }
   let flow = try await makeFlow(client, clock: clock, transport: transport)
   await flow.suspend()
-  #expect(flow.state == .suspended)
-  #expect(await transport.closes == 1)
-  await flow.retry()
   #expect(flow.state == .openWindow)
+  #expect(await transport.opens == 0)
+  #expect(await transport.closes == 0)
   #expect(await client.calls.isEmpty)
-  #expect(await transport.opens == 2)
-  #expect(await transport.mostOpen == 1)
 }
 
 @Test @MainActor func backgroundBeforeAConnectOpensSuspendsIt() async throws {
@@ -553,7 +563,7 @@ private struct Factory: ControllerClientFactory {
   #expect(await transport.opens == 0)
   await flow.retry()
   #expect(flow.state == .openWindow)
-  #expect(await transport.opens == 1)
+  #expect(await transport.opens == 0)
 }
 
 @Test @MainActor func backgroundDuringPairSuspendsAndAbandonsIt() async throws {

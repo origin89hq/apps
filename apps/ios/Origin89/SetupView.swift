@@ -499,8 +499,12 @@ private struct OpenWindowView: View {
           )
         }
         Origin89Notice(
-          "Press the pairing button on the controller's panel. The window stays open for 120 seconds, and pairing must finish inside it."
+          "Press the pairing button on the controller's panel. A controller no phone has paired with also opens it for 120 seconds after it powers on. The window stays open for 120 seconds, and pairing must finish inside it."
         )
+        Text(
+          "This phone connects over Bluetooth once the window is open. The controller's Wi-Fi is off until pairing ends."
+        )
+        .foregroundStyle(.secondary)
         Button("The window is open, pair now", action: opened)
           .buttonStyle(.borderedProminent)
         Spacer()
@@ -561,13 +565,23 @@ private struct WrittenView: View {
   var body: some View {
     Form {
       Section {
-        Text("Network settings saved")
-        Origin89Status("Saved", tone: .nominal)
-        Text(
-          flow.reportsWiFi
-            ? "The controller accepted version \(version) and passes it to its radio. It may drop the Bluetooth connection while it joins the network. Once it joins, this phone continues over Wi-Fi if it is on the same network."
-            : "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
-        )
+        if flow.joinsHeldNetwork {
+          Text("Network settings kept")
+          Origin89Status("Kept", tone: .nominal)
+          Text(
+            "The controller already holds \(flow.network?.ssid ?? "a network") and joins it now that pairing ended. It may drop the Bluetooth connection while it joins. Once it joins, this phone continues over Wi-Fi if it is on the same network."
+          )
+        } else {
+          Text("Network settings saved")
+          Origin89Status("Saved", tone: .nominal)
+          Text(
+            flow.reportsWiFi
+              ? "The controller accepted version \(version) and passes it to its radio. It may drop the Bluetooth connection while it joins the network. Once it joins, this phone continues over Wi-Fi if it is on the same network."
+              : "The controller accepted version \(version) and passes it to its radio. Watch the module join the network."
+          )
+        }
+        Button("Choose another network") { Task { await flow.changeNetwork() } }
+          .disabled(flow.isSwitchingToWiFi)
       }
       if flow.reportsWiFi { JoinSection(join: flow.join, flow: flow) }
       LinkSection(flow: flow)
@@ -649,10 +663,17 @@ private struct JoinSection: View {
         Button("Check again") { Task { await flow.watchJoinAgain() } }
       case .connectionLost:
         Origin89Status("Unknown", tone: .warning)
-        Text(
-          "The Bluetooth connection ended before the controller said whether it joined. The network settings are saved."
-        )
-        Button("Check again") { Task { await flow.watchJoinAgain() } }
+        if let unavailable = flow.wifiUnavailable {
+          Text(
+            "The Bluetooth connection ended before the controller said whether it joined, and this phone did not find it on Wi-Fi within 30 seconds. The network settings are saved."
+          )
+          Origin89Notice(unavailable.reason)
+        } else {
+          Text(
+            "The Bluetooth connection ended before the controller said whether it joined. The network settings are saved."
+          )
+        }
+        Button("Check again over Wi-Fi or Bluetooth") { Task { await flow.watchJoinAgain() } }
       }
     } header: {
       Text("Wi-Fi")
