@@ -216,17 +216,21 @@ public protocol AccountSessionStore: Sendable {
       return refreshed
     case .failure(let error):
       let error = error as? AccountError ?? .unavailable
-      if error == .refused { endSession() }
+      if error == .refused { try endSession() }
       throw error
     }
   }
 
-  private func endSession() {
+  /// WorkOS refused the refresh token. The account reports signed out only
+  /// once the Keychain no longer holds the session, so a relaunch cannot
+  /// load it as signed in.
+  private func endSession() throws(AccountError) {
     SetupLog.account.notice("WorkOS refused the refresh token: the session ended")
     do {
       try store.remove()
     } catch {
       SetupLog.account.error("the ended session could not be removed from the Keychain")
+      throw error
     }
     generation += 1
     session = nil

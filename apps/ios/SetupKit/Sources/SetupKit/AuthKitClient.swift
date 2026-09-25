@@ -149,15 +149,25 @@ public struct AuthKitClient: Sendable {
         SetupLog.account.error("WorkOS answered with an unreadable session")
         throw .invalidResponse
       }
-    case 400..<429, 430..<500:
-      SetupLog.account.notice(
-        "WorkOS refused the grant: status \(response.statusCode, privacy: .public)")
+    case 400..<500 where Self.oauthError(in: data) == "invalid_grant":
+      // The code or refresh token is spent, expired or revoked (RFC 6749 5.2).
+      SetupLog.account.notice("WorkOS refused the grant")
       throw .refused
+    case 400..<500 where response.statusCode != 408 && response.statusCode != 429:
+      // Not a verdict on the grant: the session is kept.
+      SetupLog.account.error(
+        "WorkOS rejected the request: status \(response.statusCode, privacy: .public)")
+      throw .invalidResponse
     default:
       SetupLog.account.error(
         "WorkOS is unavailable: status \(response.statusCode, privacy: .public)")
       throw .unavailable
     }
+  }
+
+  private static func oauthError(in data: Data) -> String? {
+    struct Body: Decodable { let error: String }
+    return try? JSONDecoder().decode(Body.self, from: data).error
   }
 
   private static let decoder: JSONDecoder = {

@@ -264,6 +264,35 @@ private func signedIn(access: String, refresh: String = "r1") -> AccountSession 
   await #expect(throws: AccountError.signedOut) { try await account.accessToken() }
 }
 
+/// Only `invalid_grant` says the refresh token is dead; a timeout, a rate
+/// limit or another client error keeps the session.
+@Test(arguments: [
+  (408, ""), (429, ""), (400, #"{"error":"invalid_request"}"#),
+  (401, #"{"error":"invalid_client"}"#), (403, ""),
+])
+@MainActor func anErrorOtherThanInvalidGrantKeepsTheSession(status: Int, body: String) async {
+  let kept = signedIn(access: token(expiresIn: -10))
+  let store = MemorySessionStore(kept)
+  let account = account(StubHTTP([.status(status, body)]), store)
+  await #expect(throws: (any Error).self) { try await account.accessToken() }
+  #expect(account.status == .signedIn(user))
+  #expect(!account.sessionEnded)
+  #expect(store.session == kept)
+}
+
+/// A refused refresh whose session the Keychain keeps is not reported as
+/// signed out: a relaunch would load it as signed in.
+@Test @MainActor func anEndedSessionTheKeychainKeepsIsReported() async {
+  let kept = signedIn(access: token(expiresIn: -10))
+  let http = StubHTTP([.status(400, #"{"error":"invalid_grant"}"#)])
+  let account = account(http, MemorySessionStore(kept, refusesRemovals: true))
+  await #expect(throws: AccountError.keychain(errSecInteractionNotAllowed)) {
+    try await account.accessToken()
+  }
+  #expect(account.status == .signedIn(user))
+  #expect(!account.sessionEnded)
+}
+
 /// Offline is not a sign-out: the session stays for the next attempt.
 @Test @MainActor func anUnreachableRefreshKeepsTheSession() async throws {
   let kept = signedIn(access: token(expiresIn: -10))
