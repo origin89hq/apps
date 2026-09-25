@@ -31,6 +31,8 @@ private actor FakeClient: ControllerClient {
   var holdPair = false
   var pairContinuation: CheckedContinuation<Void, Never>?
   var holdHello = false
+  var holdEnrolled = false
+  var enrolledContinuation: CheckedContinuation<Void, Never>?
   var helloContinuation: CheckedContinuation<Void, Never>?
   var writtenVersion: UInt32?
   var enrolled = false
@@ -57,7 +59,18 @@ private actor FakeClient: ControllerClient {
     return ControllerSummary(deviceID: "abcd")
   }
   func restore(from store: any EnrolmentStore) async {}
-  func isEnrolled() async -> Bool { enrolled }
+  func holdEnrolledCheck() { holdEnrolled = true }
+  func releaseEnrolledCheck() {
+    enrolledContinuation?.resume()
+    enrolledContinuation = nil
+  }
+  func isEnrolled() async -> Bool {
+    if holdEnrolled {
+      holdEnrolled = false
+      await withCheckedContinuation { enrolledContinuation = $0 }
+    }
+    return enrolled
+  }
   func keep(in store: any EnrolmentStore) async throws {}
   func pair() async throws(SetupFailure) {
     try record(.pair)
@@ -97,6 +110,8 @@ private actor FakeClient: ControllerClient {
     pairContinuation = nil
     helloContinuation?.resume()
     helloContinuation = nil
+    enrolledContinuation?.resume()
+    enrolledContinuation = nil
   }
 }
 private struct Factory: ControllerClientFactory {
@@ -499,6 +514,30 @@ private struct Factory: ControllerClientFactory {
   #expect(await client.calls.isEmpty)
   #expect(await transport.opens == 2)
   #expect(await transport.mostOpen == 1)
+}
+
+@Test @MainActor func backgroundBeforeAConnectOpensSuspendsIt() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let flow = SetupFlow(
+    factory: Factory(fake: client), store: NoEnrolmentStore(),
+    transportFactory: { transport }, clock: TestClock())
+  try flow.submitCode("valid")
+  await client.holdEnrolledCheck()
+  let run = Task { await flow.connect() }
+  for _ in 0..<1000 {
+    if await client.enrolledContinuation != nil { break }
+    await Task.yield()
+  }
+  await flow.suspend()
+  // Closing releases the check; without a close the connect would go on.
+  await client.releaseEnrolledCheck()
+  await run.value
+  #expect(flow.state == .suspended)
+  #expect(await transport.opens == 0)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  #expect(await transport.opens == 1)
 }
 
 @Test @MainActor func backgroundDuringPairSuspendsAndAbandonsIt() async throws {

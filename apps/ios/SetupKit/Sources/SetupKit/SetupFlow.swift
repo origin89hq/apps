@@ -802,7 +802,8 @@ import Observation
   /// network stays written, since its step reconnects on its own; anything
   /// else in progress is suspended and resumes through retry.
   public func suspend() async {
-    guard transportActive else { return }
+    // A connect still before its open counts too: closing ends it there.
+    guard transportActive || isConnecting else { return }
     SetupLog.flow.notice("the app left the foreground: closing the connection")
     await close()
     switch state {
