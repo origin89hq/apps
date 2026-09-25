@@ -33,6 +33,11 @@ public struct AccountEnrolmentStore: EnrolmentStore {
     try Self.both({ try own.removeAll() }, { try signedOut.removeAll() })
   }
 
+  /// Both stores' controllers, each once.
+  public func deviceIDs() -> [String] {
+    Set(own.deviceIDs()).union(signedOut.deviceIDs()).sorted()
+  }
+
   private static func both(_ first: () throws -> Void, _ second: () throws -> Void) throws {
     var failure: (any Error)?
     do { try first() } catch { failure = error }

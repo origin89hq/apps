@@ -16,10 +16,10 @@ use km43::{
     SignedClaim, StateSeq, Tagged, Time, TimeAck, Topology, Version, Wrapper,
 };
 use origin89_setup::{
-    ControllerId, Engine, ErrorNote, FrameNote, HeardNetwork, JoinFailure, NetworkBand,
-    NetworkChange, NetworkScan, NetworkSecurity, NetworkSettings, NonceSource, RadioState,
-    RadioStatus, ScanProgress, ScanRefusal, SetupCode, SetupFailure, SetupSession, WifiStatus,
-    resume_session,
+    ControllerId, Engine, ErrorNote, FrameNote, HeardNetwork, JoinFailure, KeptGeneration,
+    NetworkBand, NetworkChange, NetworkScan, NetworkSecurity, NetworkSettings, NonceSource,
+    RadioState, RadioStatus, ScanProgress, ScanRefusal, SetupCode, SetupFailure, SetupSession,
+    WifiStatus, kept_generation, resume_session,
 };
 use serde_json::Value;
 
@@ -1744,6 +1744,48 @@ fn a_kept_enrolment_for_another_epoch_pairs_again() {
         let replaced = engine.kept_enrolment().expect("paired again");
         assert_ne!(replaced.as_slice(), kept.as_slice());
     }
+}
+
+#[test]
+fn a_kept_enrolment_names_its_generation() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let expected = KeptGeneration {
+        device_id: hex::encode(controller.device_id),
+        epoch: 1,
+    };
+    assert_eq!(KeptGeneration::read(&kept), Some(expected.clone()));
+    assert_eq!(kept_generation(kept), Some(expected));
+}
+
+#[test]
+fn a_generation_follows_the_epoch_paired_at() {
+    let mut controller = Controller::new();
+    controller.epoch = Epoch::new(u32::MAX).unwrap();
+    let kept = kept_after_pairing(&mut controller);
+    let generation = KeptGeneration::read(&kept).expect("decodes");
+    assert_eq!(generation.epoch, u32::MAX);
+    assert_eq!(
+        generation.device_id,
+        ControllerId::from(controller.device_id).to_string()
+    );
+}
+
+#[test]
+fn undecodable_bytes_name_no_generation() {
+    let mut controller = Controller::new();
+    let kept = kept_after_pairing(&mut controller);
+    let mut unknown_format = kept.clone();
+    unknown_format[0] = 2;
+    let mut zero_epoch = kept.clone();
+    zero_epoch[17..21].copy_from_slice(&[0; 4]);
+    let cut = &kept[..kept.len() - 1];
+    let mut longer = kept.clone();
+    longer.push(0);
+    for bytes in [&[][..], cut, &longer, &unknown_format, &zero_epoch] {
+        assert_eq!(KeptGeneration::read(bytes), None, "{} bytes", bytes.len());
+    }
+    assert_eq!(kept_generation(zero_epoch), None);
 }
 
 /// The controller answers a kept key it will not take with an `Error`; the

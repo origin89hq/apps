@@ -95,6 +95,11 @@ struct FileEnrolmentStore: EnrolmentStore {
   func removeAll() throws {
     try removeIfPresent(BenchFiles.directory.appending(path: "enrolments"))
   }
+  func deviceIDs() -> [String] {
+    let directory = BenchFiles.directory.appending(path: "enrolments")
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    return names.filter(isDeviceID).sorted()
+  }
 }
 
 func removeIfPresent(_ url: URL) throws {

@@ -1058,6 +1058,12 @@ import Observation
   /// found, or the one a relaunch reconnects to.
   public var knownController: String? { controller?.deviceID ?? lastDeviceID }
 
+  /// The generation of every enrolment this flow's store keeps, for linking
+  /// to a site. Only `device_id` and `epoch` leave the store.
+  public func keptGenerations(reader: any GenerationReader) -> [ControllerGeneration] {
+    store.generations(reader: reader)
+  }
+
   /// Forget the known controller: start over, then remove its kept
   /// enrolment and address. Its setup code then pairs as a new phone would.
   /// When the enrolment cannot be removed the error is thrown, and the flow

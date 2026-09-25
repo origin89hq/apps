@@ -10,6 +10,8 @@ struct AccountView: View {
   /// Nil in a build without a cloud.
   let cloud: CloudClient?
   let pairings: any AccountPairingStore
+  /// The generations of the pairings this account sees on this phone.
+  let generations: () -> [ControllerGeneration]
 
   @State private var failure: String?
   @State private var confirmingSignOut = false
@@ -89,6 +91,15 @@ struct AccountView: View {
       Text(user.email).foregroundStyle(.secondary)
     } header: {
       Text("Signed in")
+    }
+    if let cloud {
+      Section {
+        NavigationLink("Sites") {
+          SitesView(cloud: cloud, generations: generations, authenticate: authenticate)
+        }
+      } footer: {
+        Text("Link the controllers paired with this phone to a site in your account.")
+      }
     }
     Section {
       Button("Sign out", role: .destructive) { confirmingSignOut = true }

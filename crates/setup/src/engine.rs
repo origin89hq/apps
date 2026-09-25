@@ -28,7 +28,7 @@ use km43::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::code::{ControllerId, SetupCode};
+use crate::code::{ControllerId, DEVICE_ID_BYTES, SetupCode};
 use crate::wifi::{NetworkScan, WifiStatus};
 
 const NONCE_BYTES: usize = 16;
@@ -122,6 +122,36 @@ pub struct ControllerSummary {
     /// matched. `false` means `Pair`, including when a kept enrolment was for
     /// another `epoch`.
     pub enrolled: bool,
+}
+
+/// The ownership generation a kept enrolment belongs to: the controller and
+/// the `epoch` it was issued at. A factory reset raises the `epoch`, so the
+/// pair names one owner's generation of that controller. Neither field is
+/// secret; both are on the controller's `Discover` answer.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct KeptGeneration {
+    /// The `device_id`, 32 lowercase hexadecimal characters.
+    pub device_id: String,
+    /// The `epoch`, never zero.
+    pub epoch: u32,
+}
+
+impl KeptGeneration {
+    /// Read the generation from an enrolment [`Engine::kept_enrolment`]
+    /// encoded. `None` for bytes km43 does not decode as a stored enrolment.
+    #[must_use]
+    pub fn read(kept: &[u8]) -> Option<Self> {
+        // km43 validates the encoding but gives out neither field, so they are
+        // read from its documented layout: format byte, `device_id`, `epoch`.
+        drop(StoredEnrolment::decode(kept).ok()?);
+        let device_id: [u8; DEVICE_ID_BYTES] = kept.get(1..=DEVICE_ID_BYTES)?.try_into().ok()?;
+        let epoch_at = 1 + DEVICE_ID_BYTES;
+        let epoch: [u8; 4] = kept.get(epoch_at..epoch_at + 4)?.try_into().ok()?;
+        Some(Self {
+            device_id: ControllerId::from(device_id).to_string(),
+            epoch: u32::from_be_bytes(epoch),
+        })
+    }
 }
 
 /// The enrolment `Pair` produced.
