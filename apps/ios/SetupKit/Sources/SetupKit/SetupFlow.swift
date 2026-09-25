@@ -124,6 +124,9 @@ import Observation
     /// optional clock write landed.
     case finished(version: UInt32, timeSet: Bool)
     case failed(SetupFailure, RetryTarget)
+    /// The app left the foreground and closed the connection; nothing failed.
+    /// Retry reconnects and continues where setup stopped.
+    case suspended
   }
   /// Where a new session continues after a reconnect.
   private enum Resume: Equatable {
@@ -796,24 +799,29 @@ import Observation
     }
   }
   /// The app left the foreground: give the connection back. A written
-  /// network stays written; anything in progress resumes through retry.
+  /// network stays written, since its step reconnects on its own; anything
+  /// else in progress is suspended and resumes through retry.
   public func suspend() async {
     guard transportActive else { return }
     SetupLog.flow.notice("the app left the foreground: closing the connection")
     await close()
     switch state {
-    case .written, .settingTime:
-      if let version = writtenVersion { state = .written(version) }
-    case .enterCode, .finished, .failed(_, .enterCode):
+    case .enterCode, .finished, .suspended, .failed(_, .enterCode):
       break
     case .failed(let failure, _):
       state = .failed(failure, target(forLost: failure))
-    default:
-      state = .failed(.connectionDropped, .connecting)
+    case .connecting, .openWindow, .discovering, .pairing, .greeting, .readingNetwork,
+      .editingNetwork, .writingNetwork, .written, .settingTime:
+      state = writtenVersion.map(State.written) ?? .suspended
     }
   }
   public func retry() async {
-    guard case .failed(_, let target) = state else { return }
+    let target: RetryTarget
+    switch state {
+    case .suspended: target = .connecting
+    case .failed(_, let failed): target = failed
+    default: return
+    }
     SetupLog.flow.info("retrying from \(String(describing: target), privacy: .public)")
     switch target {
     case .enterCode: state = .enterCode
@@ -981,7 +989,7 @@ extension SetupFlow.State {
     case .editingNetwork(let settings): "editingNetwork(version \(settings.version))"
     case .failed(let failure, let target): "failed(\(failure), retry \(target))"
     case .enterCode, .connecting, .openWindow, .discovering, .pairing, .greeting,
-      .readingNetwork, .writingNetwork, .written, .settingTime, .finished:
+      .readingNetwork, .writingNetwork, .written, .settingTime, .finished, .suspended:
       "\(self)"
     }
   }

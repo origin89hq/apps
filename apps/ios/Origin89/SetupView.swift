@@ -10,6 +10,8 @@ struct SetupView: View {
 
   @State private var windowOpenedAt: Date?
   @State private var failedDuring: SetupFlow.State?
+  /// The network page the person opened, kept across a reconnect.
+  @State private var networkStep: NetworkStep?
   @State private var confirming: Forget?
   @State private var forgetFailed = false
   @Environment(\.scenePhase) private var scenePhase
@@ -67,6 +69,7 @@ struct SetupView: View {
     }
     .onChange(of: flow.state) { old, new in
       if case .failed = new { failedDuring = old }
+      if new == .enterCode { networkStep = nil }
       switch new {
       case .discovering, .pairing: break
       default: windowOpenedAt = nil
@@ -106,7 +109,14 @@ struct SetupView: View {
     case .readingNetwork:
       Progress(title: "Reading network settings", detail: nil)
     case .editingNetwork(let settings):
-      NetworkView(settings: settings, flow: flow)
+      NetworkView(
+        settings: settings, flow: flow,
+        step: Binding(
+          get: { networkStep },
+          set: { step in
+            // Leaving the network state pops its page too: keep only the person's choices.
+            if case .editingNetwork = flow.state { networkStep = step }
+          }))
     case .writingNetwork:
       Progress(title: "Saving network settings", detail: nil)
     case .written(let version):
@@ -117,6 +127,17 @@ struct SetupView: View {
       Progress(title: "Setting the controller's clock", detail: nil)
     case .failed(let failure, _):
       FailureView(message: message(for: failure)) {
+        Task { await flow.retry() }
+      } startOver: {
+        Task { await startOver() }
+      }
+    case .suspended:
+      FailureView(
+        heading: "Setup paused",
+        message:
+          "This phone closed its connection to the controller when the app left the screen. Reconnect to continue where setup stopped.",
+        tone: .info, retryTitle: "Reconnect"
+      ) {
         Task { await flow.retry() }
       } startOver: {
         Task { await startOver() }
@@ -662,16 +683,19 @@ private struct FinishedView: View {
 }
 
 private struct FailureView: View {
+  var heading = "Setup stopped"
   let message: String
+  var tone: Origin89NoticeTone = .alarm
+  var retryTitle = "Try again"
   let retry: () -> Void
   let startOver: () -> Void
   var body: some View {
     SetupPage {
       VStack(alignment: .leading, spacing: 16) {
-        Heading(text: "Setup stopped")
-        Origin89Notice(message, tone: .alarm)
+        Heading(text: heading)
+        Origin89Notice(message, tone: tone)
         HStack {
-          Button("Try again", action: retry).buttonStyle(.borderedProminent)
+          Button(retryTitle, action: retry).buttonStyle(.borderedProminent)
           Button("Start over", action: startOver).buttonStyle(.bordered)
         }
         Spacer()

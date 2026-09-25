@@ -201,7 +201,7 @@ func label(_ state: SetupFlow.State) -> String {
   case .editingNetwork(let settings): "editingNetwork(version \(settings.version))"
   case .failed(let failure, let target): "failed(\(failure), retry \(target)): \(failure.message)"
   case .enterCode, .connecting, .openWindow, .discovering, .pairing, .greeting, .readingNetwork,
-    .writingNetwork, .written, .settingTime, .finished:
+    .writingNetwork, .written, .settingTime, .finished, .suspended:
     "\(state)"
   }
 }

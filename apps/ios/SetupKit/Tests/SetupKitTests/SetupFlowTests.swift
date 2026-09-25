@@ -30,6 +30,8 @@ private actor FakeClient: ControllerClient {
   var closed = false
   var holdPair = false
   var pairContinuation: CheckedContinuation<Void, Never>?
+  var holdHello = false
+  var helloContinuation: CheckedContinuation<Void, Never>?
   var writtenVersion: UInt32?
   var enrolled = false
   let settings = NetworkSettings(
@@ -62,8 +64,10 @@ private actor FakeClient: ControllerClient {
     // A held Pair is abandoned by close() before its reply arrives.
     if holdPair { await withCheckedContinuation { pairContinuation = $0 } } else { enrolled = true }
   }
+  func holdHellos() { holdHello = true }
   func hello() async throws(SetupFailure) -> SessionReport {
     try record(.hello)
+    if holdHello { await withCheckedContinuation { helloContinuation = $0 } }
     return SessionReport(reportsWiFi: false)
   }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
@@ -91,6 +95,8 @@ private actor FakeClient: ControllerClient {
     closed = true
     pairContinuation?.resume()
     pairContinuation = nil
+    helloContinuation?.resume()
+    helloContinuation = nil
   }
 }
 private struct Factory: ControllerClientFactory {
@@ -469,13 +475,70 @@ private struct Factory: ControllerClientFactory {
   let flow = try await makeFlow(client, clock: clock, transport: transport)
   await flow.confirmWindowOpened()
   await flow.suspend()
-  #expect(flow.state == .failed(.connectionDropped, .connecting))
+  #expect(flow.state == .suspended)
   await flow.suspend()
   #expect(await transport.closes == 1)
   await flow.retry()
   #expect(flow.state == .editingNetwork(client.settings))
   #expect(await client.calls == [.discover, .pair, .hello, .read, .discover, .hello, .read])
   #expect(await transport.opens == 2)
+  #expect(await transport.mostOpen == 1)
+}
+
+@Test @MainActor func backgroundWithTheWindowStepSuspendsAndReturnsToIt() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(client, clock: clock, transport: transport)
+  await flow.suspend()
+  #expect(flow.state == .suspended)
+  #expect(await transport.closes == 1)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  #expect(await client.calls.isEmpty)
+  #expect(await transport.opens == 2)
+  #expect(await transport.mostOpen == 1)
+}
+
+@Test @MainActor func backgroundDuringPairSuspendsAndAbandonsIt() async throws {
+  let client = FakeClient(holdPair: true)
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(client, clock: clock)
+  let run = Task { await flow.confirmWindowOpened() }
+  for _ in 0..<1000 {
+    if await client.pairContinuation != nil { break }
+    await Task.yield()
+  }
+  #expect(flow.state == .pairing)
+  await flow.suspend()
+  await run.value
+  #expect(flow.state == .suspended)
+  #expect(await client.closed)
+  #expect(await client.calls == [.discover, .pair])
+}
+
+@Test @MainActor func backgroundDuringAReconnectAfterWritingKeepsTheResult() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await writtenFlow(client, clock: clock, transport: transport)
+  await flow.suspend()
+  await client.holdHellos()
+  let run = Task { await flow.setTime() }
+  for _ in 0..<1000 {
+    if await client.helloContinuation != nil { break }
+    await Task.yield()
+  }
+  #expect(flow.state == .greeting)
+  await flow.suspend()
+  await run.value
+  #expect(flow.state == .written(8))
+  #expect(!(await client.calls.contains(.time)))
+  let opens = await transport.opens
+  #expect(await transport.closes == opens)
   #expect(await transport.mostOpen == 1)
 }
 
