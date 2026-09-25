@@ -10,14 +10,11 @@ import SwiftUI
 struct NetworkView: View {
   let settings: NetworkSettings
   let flow: SetupFlow
+  /// The page opened from the list. The caller keeps it, so a reconnect
+  /// after the app left the screen reopens it.
+  @Binding var step: NetworkStep?
 
   @State private var phoneSSID: String?
-  @State private var destination: Destination?
-
-  private enum Destination: Hashable {
-    case join(String)
-    case other, forget
-  }
 
   var body: some View {
     List {
@@ -32,7 +29,7 @@ struct NetworkView: View {
         Section {
           ForEach(heard) { network in
             Button {
-              destination = .join(network.ssid)
+              step = .join(network.ssid)
             } label: {
               HeardRow(
                 network: network, saved: same(network.ssid, settings.ssid),
@@ -40,7 +37,7 @@ struct NetworkView: View {
             }
             .disabled(!network.security.isJoinable)
           }
-          Button("Other network…") { destination = .other }
+          Button("Other network…") { step = .other }
         } header: {
           scanHeader
         } footer: {
@@ -51,7 +48,7 @@ struct NetworkView: View {
           ForEach(NetworkSuggestion.list(controller: settings.ssid, phone: phoneSSID)) {
             suggestion in
             Button {
-              destination = .join(suggestion.ssid)
+              step = .join(suggestion.ssid)
             } label: {
               SuggestionRow(suggestion: suggestion, passphraseSet: settings.passphraseSet)
             }
@@ -62,7 +59,7 @@ struct NetworkView: View {
               Text("Looking for networks…").foregroundStyle(Color.origin89.muted)
             }
           }
-          Button("Other network…") { destination = .other }
+          Button("Other network…") { step = .other }
         } header: {
           if flow.reportsWiFi { scanHeader }
         } footer: {
@@ -72,15 +69,15 @@ struct NetworkView: View {
       LinkSection(flow: flow)
       if let held = settings.ssid {
         Section {
-          Button("Forget this network", role: .destructive) { destination = .forget }
+          Button("Forget this network", role: .destructive) { step = .forget }
         } footer: {
           Text("The controller stops joining \(held) and deletes its password.")
         }
       }
     }
-    .navigationDestination(item: $destination) { destination in
-      NetworkDetailsView(mode: mode(for: destination), settings: settings) { change in
-        self.destination = nil
+    .navigationDestination(item: $step) { step in
+      NetworkDetailsView(mode: mode(for: step), settings: settings) { change in
+        self.step = nil
         Task { await flow.writeNetwork(change) }
       }
     }
@@ -128,13 +125,20 @@ struct NetworkView: View {
     return nil
   }
 
-  private func mode(for destination: Destination) -> NetworkDetailsView.Mode {
-    switch destination {
+  private func mode(for step: NetworkStep) -> NetworkDetailsView.Mode {
+    switch step {
     case .join(let ssid): .join(ssid)
     case .other: .other
     case .forget: .forget
     }
   }
+}
+
+/// A page opened from the network list: the password for a chosen network,
+/// a network typed by name, or forgetting the held one.
+enum NetworkStep: Hashable {
+  case join(String)
+  case other, forget
 }
 
 /// SSIDs compare byte for byte, as the controller compares them (P-107).

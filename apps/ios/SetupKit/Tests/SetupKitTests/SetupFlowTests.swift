@@ -30,6 +30,12 @@ private actor FakeClient: ControllerClient {
   var closed = false
   var holdPair = false
   var pairContinuation: CheckedContinuation<Void, Never>?
+  var holdHello = false
+  var holdEnrolled = false
+  var enrolledContinuation: CheckedContinuation<Void, Never>?
+  /// Waiting for a held `isEnrolled` or `hello` to start.
+  private var holdWaiters: [CheckedContinuation<Void, Never>] = []
+  var helloContinuation: CheckedContinuation<Void, Never>?
   var writtenVersion: UInt32?
   var enrolled = false
   let settings = NetworkSettings(
@@ -55,15 +61,45 @@ private actor FakeClient: ControllerClient {
     return ControllerSummary(deviceID: "abcd")
   }
   func restore(from store: any EnrolmentStore) async {}
-  func isEnrolled() async -> Bool { enrolled }
+  func holdEnrolledCheck() { holdEnrolled = true }
+  /// Returns once a held `isEnrolled` or `hello` is waiting.
+  func held() async {
+    if enrolledContinuation != nil || helloContinuation != nil { return }
+    await withCheckedContinuation { holdWaiters.append($0) }
+  }
+  private func wakeHoldWaiters() {
+    for waiter in holdWaiters { waiter.resume() }
+    holdWaiters = []
+  }
+  func releaseEnrolledCheck() {
+    enrolledContinuation?.resume()
+    enrolledContinuation = nil
+  }
+  func isEnrolled() async -> Bool {
+    if holdEnrolled {
+      holdEnrolled = false
+      await withCheckedContinuation {
+        enrolledContinuation = $0
+        wakeHoldWaiters()
+      }
+    }
+    return enrolled
+  }
   func keep(in store: any EnrolmentStore) async throws {}
   func pair() async throws(SetupFailure) {
     try record(.pair)
     // A held Pair is abandoned by close() before its reply arrives.
     if holdPair { await withCheckedContinuation { pairContinuation = $0 } } else { enrolled = true }
   }
+  func holdHellos() { holdHello = true }
   func hello() async throws(SetupFailure) -> SessionReport {
     try record(.hello)
+    if holdHello {
+      await withCheckedContinuation {
+        helloContinuation = $0
+        wakeHoldWaiters()
+      }
+    }
     return SessionReport(reportsWiFi: false)
   }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
@@ -91,6 +127,10 @@ private actor FakeClient: ControllerClient {
     closed = true
     pairContinuation?.resume()
     pairContinuation = nil
+    helloContinuation?.resume()
+    helloContinuation = nil
+    enrolledContinuation?.resume()
+    enrolledContinuation = nil
   }
 }
 private struct Factory: ControllerClientFactory {
@@ -469,13 +509,88 @@ private struct Factory: ControllerClientFactory {
   let flow = try await makeFlow(client, clock: clock, transport: transport)
   await flow.confirmWindowOpened()
   await flow.suspend()
-  #expect(flow.state == .failed(.connectionDropped, .connecting))
+  #expect(flow.state == .suspended)
   await flow.suspend()
   #expect(await transport.closes == 1)
   await flow.retry()
   #expect(flow.state == .editingNetwork(client.settings))
   #expect(await client.calls == [.discover, .pair, .hello, .read, .discover, .hello, .read])
   #expect(await transport.opens == 2)
+  #expect(await transport.mostOpen == 1)
+}
+
+@Test @MainActor func backgroundWithTheWindowStepSuspendsAndReturnsToIt() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(client, clock: clock, transport: transport)
+  await flow.suspend()
+  #expect(flow.state == .suspended)
+  #expect(await transport.closes == 1)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  #expect(await client.calls.isEmpty)
+  #expect(await transport.opens == 2)
+  #expect(await transport.mostOpen == 1)
+}
+
+@Test @MainActor func backgroundBeforeAConnectOpensSuspendsIt() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let flow = SetupFlow(
+    factory: Factory(fake: client), store: NoEnrolmentStore(),
+    transportFactory: { transport }, clock: TestClock())
+  try flow.submitCode("valid")
+  await client.holdEnrolledCheck()
+  let run = Task { await flow.connect() }
+  await client.held()
+  await flow.suspend()
+  // Closing releases the check; without a close the connect would go on.
+  await client.releaseEnrolledCheck()
+  await run.value
+  #expect(flow.state == .suspended)
+  #expect(await transport.opens == 0)
+  await flow.retry()
+  #expect(flow.state == .openWindow)
+  #expect(await transport.opens == 1)
+}
+
+@Test @MainActor func backgroundDuringPairSuspendsAndAbandonsIt() async throws {
+  let client = FakeClient(holdPair: true)
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await makeFlow(client, clock: clock)
+  let run = Task { await flow.confirmWindowOpened() }
+  for _ in 0..<1000 {
+    if await client.pairContinuation != nil { break }
+    await Task.yield()
+  }
+  #expect(flow.state == .pairing)
+  await flow.suspend()
+  await run.value
+  #expect(flow.state == .suspended)
+  #expect(await client.closed)
+  #expect(await client.calls == [.discover, .pair])
+}
+
+@Test @MainActor func backgroundDuringAReconnectAfterWritingKeepsTheResult() async throws {
+  let client = FakeClient()
+  let transport = FakeTransport()
+  let clock = TestClock()
+  defer { clock.finish() }
+  let flow = try await writtenFlow(client, clock: clock, transport: transport)
+  await flow.suspend()
+  await client.holdHellos()
+  let run = Task { await flow.setTime() }
+  await client.held()
+  #expect(flow.state == .greeting)
+  await flow.suspend()
+  await run.value
+  #expect(flow.state == .written(8))
+  #expect(!(await client.calls.contains(.time)))
+  let opens = await transport.opens
+  #expect(await transport.closes == opens)
   #expect(await transport.mostOpen == 1)
 }
 
