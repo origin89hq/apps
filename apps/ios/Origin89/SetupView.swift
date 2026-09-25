@@ -8,6 +8,8 @@ import SwiftUI
 struct SetupView: View {
   let flow: SetupFlow
   let account: Account
+  let cloud: CloudClient?
+  let pairings: any AccountPairingStore
 
   @State private var windowOpenedAt: Date?
   @State private var failedDuring: SetupFlow.State?
@@ -56,7 +58,9 @@ struct SetupView: View {
         }
     }
     .tint(Color.origin89.action)
-    .sheet(isPresented: $accountShown) { AccountView(account: account) }
+    .sheet(isPresented: $accountShown) {
+      AccountView(account: account, cloud: cloud, pairings: pairings)
+    }
     .confirmationDialog(
       confirming == .all ? "Forget all controllers?" : "Forget this controller?",
       isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),

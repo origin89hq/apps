@@ -65,6 +65,8 @@ public enum AccountError: Error, Sendable, Equatable {
   case refused
   /// The redirect or WorkOS's answer was not what AuthKit sends.
   case invalidResponse
+  /// Asked to sign in again, another account signed in.
+  case differentAccount
   case keychain(OSStatus)
 
   public var message: String {
@@ -76,6 +78,7 @@ public enum AccountError: Error, Sendable, Equatable {
       "The sign-in service could not be reached. Check the connection and try again."
     case .refused: "Sign-in was refused. Try again."
     case .invalidResponse: "The sign-in service sent an unexpected answer. Try again."
+    case .differentAccount: "Sign in with the same account to continue."
     case .keychain: "This phone could not store or remove the sign-in in its Keychain."
     }
   }
@@ -139,19 +142,68 @@ public protocol AccountSessionStore: Sendable {
     guard status == .signedOut else { return }
     status = .signingIn
     defer { if status == .signingIn { status = .signedOut } }
-    let pkce = PKCE.random()
-    let state = Base64URL.random(bytes: 16)
-    guard let url = client.authorizationURL(challenge: pkce.challenge, state: state) else {
-      throw .invalidResponse
-    }
-    let callback = try await authenticate(url, AuthKitConfiguration.callbackScheme)
-    let code = try Self.code(from: callback, state: state)
-    let session = try await client.authenticate(code: code, verifier: pkce.verifier)
+    let session = try await authorize(client, reauthenticating: nil, using: authenticate)
     try store.save(session)
     self.session = session
     sessionEnded = false
     status = .signedIn(session.user)
     SetupLog.account.info("signed in")
+  }
+
+  /// Sign the signed-in person in again, for a cloud action that needs a
+  /// recent sign-in. The new session replaces the old one only when it is the
+  /// same user; another account's is dropped with `differentAccount`.
+  public func reauthenticate(
+    using authenticate: (URL, String) async throws(AccountError) -> URL
+  ) async throws(AccountError) {
+    guard let client else { throw .notConfigured }
+    guard case .signedIn(let user) = status else { throw .signedOut }
+    let operation = generation
+    let session = try await authorize(client, reauthenticating: user.email, using: authenticate)
+    guard generation == operation, owner == user.id else { throw .signedOut }
+    guard session.user.id == user.id else {
+      SetupLog.account.notice("another account signed in to confirm: dropped")
+      throw .differentAccount
+    }
+    try store.save(session)
+    generation += 1
+    refreshing?.cancel()
+    refreshing = nil
+    self.session = session
+    status = .signedIn(session.user)
+    SetupLog.account.info("signed in again")
+  }
+
+  /// End the session of an account the cloud deleted. Its tokens no longer
+  /// work, so memory is cleared even when the Keychain keeps them: the next
+  /// refresh is refused and removes them.
+  func endDeletedSession() {
+    do {
+      try store.remove()
+    } catch {
+      SetupLog.account.error("the deleted account's session could not be removed from the Keychain")
+    }
+    generation += 1
+    refreshing?.cancel()
+    refreshing = nil
+    session = nil
+    status = .signedOut
+    SetupLog.account.info("the account was deleted: signed out")
+  }
+
+  private func authorize(
+    _ client: AuthKitClient, reauthenticating email: String?,
+    using authenticate: (URL, String) async throws(AccountError) -> URL
+  ) async throws(AccountError) -> AccountSession {
+    let pkce = PKCE.random()
+    let state = Base64URL.random(bytes: 16)
+    guard
+      let url = client.authorizationURL(
+        challenge: pkce.challenge, state: state, reauthenticating: email)
+    else { throw .invalidResponse }
+    let callback = try await authenticate(url, AuthKitConfiguration.callbackScheme)
+    let code = try Self.code(from: callback, state: state)
+    return try await client.authenticate(code: code, verifier: pkce.verifier)
   }
 
   /// Remove the session from this phone. Enrolments are not touched. When the
