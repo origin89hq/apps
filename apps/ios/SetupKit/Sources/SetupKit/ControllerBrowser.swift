@@ -10,8 +10,9 @@ import Network
   func addresses(advertising deviceID: String) async -> [String]
 }
 
-/// A `ControllerBrowser` over `NWBrowser`. It browses `local.` until an
-/// instance names the controller or `limit` passes, then resolves each such
+/// A `ControllerBrowser` over `NWBrowser`. It browses `local.` until `settle`
+/// after the first instance naming the controller, or `limit` with none, so
+/// a later match is not lost to an earlier one. It then resolves each such
 /// instance to IPv4 with a UDP path that sends nothing to the controller, so
 /// no connection slot is used before the WebSocket opens. The app must declare
 /// the service type in `NSBonjourServices`; iOS refuses to browse others.
@@ -19,12 +20,17 @@ import Network
   private let serviceType: String
   private let deviceIDKey: String
   private let limit: Duration
+  private let settle: Duration
 
   /// Browse `serviceType`, reading the `device_id` from TXT key `deviceIDKey`.
-  public init(serviceType: String, deviceIDKey: String, limit: Duration = .seconds(3)) {
+  public init(
+    serviceType: String, deviceIDKey: String, limit: Duration = .seconds(3),
+    settle: Duration = .milliseconds(500)
+  ) {
     self.serviceType = serviceType
     self.deviceIDKey = deviceIDKey
     self.limit = limit
+    self.settle = settle
   }
 
   public func addresses(advertising deviceID: String) async -> [String] {
@@ -49,12 +55,13 @@ import Network
     txt[key] == deviceID
   }
 
-  /// The endpoints of the instances naming `deviceID`, once one is seen or
-  /// `limit` passes.
+  /// The endpoints of the instances naming `deviceID`: those seen by `settle`
+  /// after the first, or none once `limit` passes.
   private func browse(for deviceID: String) async -> [NWEndpoint] {
     let browser = NWBrowser(
       for: .bonjourWithTXTRecord(type: serviceType, domain: "local."), using: NWParameters())
     let key = deviceIDKey
+    let settle = settle
     let search = Search(browser)
     return await withTaskCancellationHandler {
       await withCheckedContinuation { continuation in
@@ -71,7 +78,15 @@ import Network
               else { return nil }
               return result.endpoint
             }
-            if !search.found.isEmpty { search.finish() }
+            // More matches may follow the first; wait `settle` for them.
+            if !search.found.isEmpty, !search.settling {
+              search.settling = true
+              search.timer?.cancel()
+              search.timer = Task {
+                do { try await Task.sleep(for: settle) } catch { return }
+                search.finish()
+              }
+            }
           }
         }
         browser.stateUpdateHandler = { state in
@@ -147,6 +162,8 @@ import Network
   private var browser: NWBrowser?
   var continuation: CheckedContinuation<[NWEndpoint], Never>?
   var found: [NWEndpoint] = []
+  /// A match was seen; `timer` now ends the search after the settle time.
+  var settling = false
   var timer: Task<Void, Never>?
 
   init(_ browser: NWBrowser) { self.browser = browser }
