@@ -95,9 +95,14 @@ struct FileEnrolmentStore: EnrolmentStore {
   func removeAll() throws {
     try removeIfPresent(BenchFiles.directory.appending(path: "enrolments"))
   }
-  func deviceIDs() -> [String] {
+  func storedDeviceIDs() throws -> [String] {
     let directory = BenchFiles.directory.appending(path: "enrolments")
-    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    let names: [String]
+    do {
+      names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    } catch CocoaError.fileReadNoSuchFile {
+      return []
+    }
     return names.filter(isDeviceID).sorted()
   }
 }

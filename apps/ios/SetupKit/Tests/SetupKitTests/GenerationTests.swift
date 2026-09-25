@@ -15,20 +15,20 @@ struct ByteGenerationReader: GenerationReader {
 
 private func kept(_ deviceID: String, epoch: UInt8) -> Data { Data([epoch]) + Data(deviceID.utf8) }
 
-@Test func everyKeptEnrolmentNamesItsGeneration() {
+@Test func everyKeptEnrolmentNamesItsGeneration() throws {
   let store = MemoryEnrolmentStore(["b": kept("b", epoch: 2), "a": kept("a", epoch: 5)])
   #expect(
-    store.generations(reader: ByteGenerationReader()) == [
+    try store.generations(reader: ByteGenerationReader()) == [
       ControllerGeneration(deviceID: "a", epoch: 5), ControllerGeneration(deviceID: "b", epoch: 2),
     ])
 }
 
-@Test func nothingKeptNamesNoGeneration() {
-  #expect(MemoryEnrolmentStore().generations(reader: ByteGenerationReader()).isEmpty)
-  #expect(NoEnrolmentStore().generations(reader: ByteGenerationReader()).isEmpty)
+@Test func nothingKeptNamesNoGeneration() throws {
+  #expect(try MemoryEnrolmentStore().generations(reader: ByteGenerationReader()).isEmpty)
+  #expect(try NoEnrolmentStore().generations(reader: ByteGenerationReader()).isEmpty)
 }
 
-@Test func unreadableOrMisfiledEnrolmentsAreLeftOut() {
+@Test func unreadableOrMisfiledEnrolmentsAreLeftOut() throws {
   let store = MemoryEnrolmentStore([
     "a": kept("a", epoch: 1),
     "b": kept("b", epoch: 0),
@@ -36,20 +36,31 @@ private func kept(_ deviceID: String, epoch: UInt8) -> Data { Data([epoch]) + Da
     "d": kept("e", epoch: 3),
   ])
   #expect(
-    store.generations(reader: ByteGenerationReader()) == [
+    try store.generations(reader: ByteGenerationReader()) == [
       ControllerGeneration(deviceID: "a", epoch: 1)
     ])
 }
 
-@Test func anAccountListsItsOwnAndSignedOutControllersOnce() {
+@Test func anAccountListsItsOwnAndSignedOutControllersOnce() throws {
   let own = MemoryEnrolmentStore(["a": kept("a", epoch: 4), "b": kept("b", epoch: 1)])
   let signedOut = MemoryEnrolmentStore(["a": kept("a", epoch: 2), "c": kept("c", epoch: 7)])
   let store = AccountEnrolmentStore(own: own, signedOut: signedOut)
-  #expect(store.deviceIDs() == ["a", "b", "c"])
+  #expect(try store.storedDeviceIDs() == ["a", "b", "c"])
   // The account's own enrolment wins, as it does when setup loads one.
   #expect(
-    store.generations(reader: ByteGenerationReader()) == [
+    try store.generations(reader: ByteGenerationReader()) == [
       ControllerGeneration(deviceID: "a", epoch: 4), ControllerGeneration(deviceID: "b", epoch: 1),
       ControllerGeneration(deviceID: "c", epoch: 7),
     ])
+}
+
+@Test func anUnreadableListIsAnErrorNotNothingKept() {
+  let locked = MemoryEnrolmentStore(["a": kept("a", epoch: 1)], refusesReads: true)
+  #expect(throws: MemoryEnrolmentStore.Refused.self) {
+    try locked.generations(reader: ByteGenerationReader())
+  }
+  let store = AccountEnrolmentStore(own: MemoryEnrolmentStore(), signedOut: locked)
+  #expect(throws: MemoryEnrolmentStore.Refused.self) {
+    try store.generations(reader: ByteGenerationReader())
+  }
 }

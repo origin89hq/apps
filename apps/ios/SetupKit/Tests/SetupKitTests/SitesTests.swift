@@ -28,14 +28,14 @@ private let fresh = #"""
   """#
 
 @MainActor private func cloud(
-  _ answers: [StubHTTP.Answer], auth: [StubHTTP.Answer] = []
+  _ answers: [StubHTTP.Answer], auth: [StubHTTP.Answer] = [], signedIn: AccountUser = user
 ) throws -> (CloudClient, StubHTTP) {
   let http = StubHTTP(answers)
   let configuration = try #require(AuthKitConfiguration(clientID: "client_01TEST"))
   let account = Account(
     client: AuthKitClient(configuration: configuration, http: StubHTTP(auth)),
     store: MemorySessionStore(
-      AccountSession(user: user, accessToken: token("old"), refreshToken: "r1")),
+      AccountSession(user: signedIn, accessToken: token("old"), refreshToken: "r1")),
     now: { now })
   let client = CloudClient(
     configuration: try #require(CloudConfiguration(baseURL: "https://cloud.example.com")),
@@ -186,4 +186,28 @@ private let name = DisplayName("Barn")!
   }
   #expect(sheet.opened == 1)
   #expect(http.requests.count == 2)
+}
+
+@Test @MainActor func aSignInAsAnotherAccountDoesNotLink() async throws {
+  // The sheet signs in someone else: the pairing belongs to the first account.
+  let other = #"""
+    {"user":{"id":"user_01B","email":"b@example.com"},"access_token":"\#(token("b"))",
+     "refresh_token":"r2"}
+    """#
+  let (cloud, http) = try cloud(
+    [.status(401, failure("reauthentication_required"))], auth: [.status(200, other)])
+  await #expect(throws: CloudError.account(.differentAccount)) {
+    try await cloud.link(generation, named: name, to: siteID, authenticate: Sheet().authenticate)
+  }
+  #expect(http.requests.count == 1)
+  #expect(cloud.account.owner == user.id)
+}
+
+@Test @MainActor func aSignedOutAccountLinksNothing() async throws {
+  let (cloud, http) = try cloud([])
+  try cloud.account.signOut()
+  await #expect(throws: CloudError.account(.signedOut)) {
+    try await cloud.link(generation, named: name, to: siteID, authenticate: Sheet().authenticate)
+  }
+  #expect(http.requests.isEmpty)
 }

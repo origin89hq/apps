@@ -8,12 +8,13 @@ import SwiftUI
 struct SitesView: View {
   let cloud: CloudClient
   /// The generations of the pairings this account sees on this phone.
-  let generations: () -> [ControllerGeneration]
+  let generations: () throws -> [ControllerGeneration]
   /// Presents AuthKit when the cloud wants a fresh sign-in.
   let authenticate: (URL, String) async throws(AccountError) -> URL
 
   @State private var sites: [Site]?
-  @State private var paired: [ControllerGeneration] = []
+  /// Nil when this phone's pairings could not be read.
+  @State private var paired: [ControllerGeneration]? = []
   @State private var failure: CloudError?
   @State private var busy = false
   @State private var newSiteName = ""
@@ -53,10 +54,13 @@ struct SitesView: View {
 
   @ViewBuilder private func controllers(_ sites: [Site]) -> some View {
     Section {
-      if paired.isEmpty {
+      if paired == nil {
+        Origin89Notice(
+          "This phone's pairings could not be read. Unlock the phone and try again.", tone: .alarm)
+      } else if paired?.isEmpty == true {
         Text("No controller is paired with this phone yet.").foregroundStyle(.secondary)
       }
-      ForEach(paired, id: \.self) { generation in
+      ForEach(paired ?? [], id: \.self) { generation in
         let site = sites.first { $0.links(generation) }
         HStack {
           VStack(alignment: .leading, spacing: 2) {
@@ -109,7 +113,7 @@ struct SitesView: View {
   }
 
   private func reload() async {
-    paired = generations()
+    paired = try? generations()
     do {
       sites = try await cloud.sites()
       failure = nil

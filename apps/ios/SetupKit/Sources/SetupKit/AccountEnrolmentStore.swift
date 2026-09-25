@@ -34,8 +34,8 @@ public struct AccountEnrolmentStore: EnrolmentStore {
   }
 
   /// Both stores' controllers, each once.
-  public func deviceIDs() -> [String] {
-    Set(own.deviceIDs()).union(signedOut.deviceIDs()).sorted()
+  public func storedDeviceIDs() throws -> [String] {
+    Set(try own.storedDeviceIDs()).union(try signedOut.storedDeviceIDs()).sorted()
   }
 
   private static func both(_ first: () throws -> Void, _ second: () throws -> Void) throws {

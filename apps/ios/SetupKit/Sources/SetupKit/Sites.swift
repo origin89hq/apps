@@ -105,14 +105,19 @@ extension CloudClient {
     }
     let path = "/v1/sites/\(site)/controllers"
     let body = Request(deviceId: generation.deviceID, epoch: generation.epoch, name: name.rawValue)
+    // The generation comes from this account's pairings: never link it for
+    // another account that signed in meanwhile.
+    guard let owner = account.owner else { throw .account(.signedOut) }
     do {
       return try await send(.post, path, body: body, as: LinkedController.self)
     } catch .reauthenticationRequired {
+      guard account.owner == owner else { throw .account(.differentAccount) }
       do {
         try await account.reauthenticate(using: authenticate)
       } catch {
         throw .account(error)
       }
+      guard account.owner == owner else { throw .account(.differentAccount) }
       return try await send(.post, path, body: body, as: LinkedController.self)
     }
   }

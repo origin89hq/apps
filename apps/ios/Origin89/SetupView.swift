@@ -62,7 +62,7 @@ struct SetupView: View {
     .sheet(isPresented: $accountShown) {
       AccountView(
         account: account, cloud: cloud, pairings: pairings,
-        generations: { flow.keptGenerations(reader: RustGenerationReader()) })
+        generations: { try flow.keptGenerations(reader: RustGenerationReader()) })
     }
     .confirmationDialog(
       confirming == .all ? "Forget all controllers?" : "Forget this controller?",

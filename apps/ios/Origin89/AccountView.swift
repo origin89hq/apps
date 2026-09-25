@@ -11,7 +11,7 @@ struct AccountView: View {
   let cloud: CloudClient?
   let pairings: any AccountPairingStore
   /// The generations of the pairings this account sees on this phone.
-  let generations: () -> [ControllerGeneration]
+  let generations: () throws -> [ControllerGeneration]
 
   @State private var failure: String?
   @State private var confirmingSignOut = false

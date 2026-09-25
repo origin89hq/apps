@@ -9,7 +9,7 @@ struct NoEnrolmentStore: EnrolmentStore {
   func save(_ enrolment: Data, deviceID: String) throws {}
   func remove(deviceID: String) throws {}
   func removeAll() throws {}
-  func deviceIDs() -> [String] { [] }
+  func storedDeviceIDs() throws -> [String] { [] }
 }
 
 /// Keeps entries in memory, or refuses every save or removal.
@@ -19,8 +19,13 @@ final class MemoryEnrolmentStore: EnrolmentStore, @unchecked Sendable {
   private var entries: [String: Data]
   private let refusesSaves: Bool
   private let refusesRemovals: Bool
-  init(_ entries: [String: Data] = [:], refusesSaves: Bool = false, refusesRemovals: Bool = false) {
+  private let refusesReads: Bool
+  init(
+    _ entries: [String: Data] = [:], refusesSaves: Bool = false, refusesRemovals: Bool = false,
+    refusesReads: Bool = false
+  ) {
     self.entries = entries
+    self.refusesReads = refusesReads
     self.refusesSaves = refusesSaves
     self.refusesRemovals = refusesRemovals
   }
@@ -39,7 +44,10 @@ final class MemoryEnrolmentStore: EnrolmentStore, @unchecked Sendable {
     if refusesRemovals { throw Refused() }
     lock.withLock { entries.removeAll() }
   }
-  func deviceIDs() -> [String] { lock.withLock { entries.keys.sorted() } }
+  func storedDeviceIDs() throws -> [String] {
+    if refusesReads { throw Refused() }
+    return lock.withLock { entries.keys.sorted() }
+  }
 }
 
 private actor Transport: FrameTransport {

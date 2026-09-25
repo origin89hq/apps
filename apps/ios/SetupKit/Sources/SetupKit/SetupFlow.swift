@@ -1060,8 +1060,8 @@ import Observation
 
   /// The generation of every enrolment this flow's store keeps, for linking
   /// to a site. Only `device_id` and `epoch` leave the store.
-  public func keptGenerations(reader: any GenerationReader) -> [ControllerGeneration] {
-    store.generations(reader: reader)
+  public func keptGenerations(reader: any GenerationReader) throws -> [ControllerGeneration] {
+    try store.generations(reader: reader)
   }
 
   /// Forget the known controller: start over, then remove its kept
