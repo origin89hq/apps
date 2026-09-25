@@ -3,15 +3,21 @@ import Security
 
 /// Enrolments in the Keychain: this device only, readable only while it is
 /// unlocked, never synced or restored to another phone. One generic-password
-/// item per controller, its account the `device_id`.
+/// item per controller, its account the `device_id`. Enrolments made while
+/// signed out share one service; each WorkOS account has its own below it.
 public struct KeychainEnrolmentStore: EnrolmentStore {
   public struct Failure: Error, Sendable, Equatable {
     public let status: OSStatus
   }
 
+  public static let signedOutService = "com.origin89.setup.enrolment"
+
   private let service: String
 
-  public init(service: String = "com.origin89.setup.enrolment") { self.service = service }
+  public init(service: String = Self.signedOutService) { self.service = service }
+
+  /// The enrolments made while `owner` was signed in.
+  public init(owner: AccountID) { self.init(service: Self.signedOutService + "/" + owner.rawValue) }
 
   public func load(deviceID: String) -> Data? {
     var query = item(deviceID)
@@ -36,6 +42,29 @@ public struct KeychainEnrolmentStore: EnrolmentStore {
   /// Every item under this service, including ones a previous install of
   /// the app left: Keychain items outlive an app delete.
   public func removeAll() throws { try delete(items()) }
+
+  /// Every enrolment this app kept, signed out and under every account,
+  /// including ones a previous install left.
+  public static func removeEveryAccount() throws {
+    try KeychainEnrolmentStore().removeAll()
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecUseDataProtectionKeychain as String: true,
+      kSecMatchLimit as String: kSecMatchLimitAll,
+      kSecReturnAttributes as String: true,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw Failure(status: status)
+    }
+    let services = Set(
+      (result as? [[String: Any]] ?? []).compactMap { $0[kSecAttrService as String] as? String }
+    )
+    for service in services where service.hasPrefix(signedOutService + "/") {
+      try KeychainEnrolmentStore(service: service).removeAll()
+    }
+  }
 
   private func delete(_ query: [String: Any]) throws {
     let status = SecItemDelete(query as CFDictionary)

@@ -11,6 +11,7 @@
 		AB8900000000000000000001 /* Origin89UI in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000002 /* Origin89UI */; };
 		AB8900000000000000000009 /* SetupKit in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000007 /* SetupKit */; };
 		AB890000000000000000000A /* SetupCore in Frameworks */ = {isa = PBXBuildFile; productRef = AB8900000000000000000008 /* SetupCore */; };
+		AB8900000000000000000015 /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB8900000000000000000014 /* AccountView.swift */; };
 		AB890000000000000000000C /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000B /* SetupView.swift */; };
 		AB890000000000000000000E /* NetworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000D /* NetworkView.swift */; };
 		AB8900000000000000000010 /* CodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB890000000000000000000F /* CodeScannerView.swift */; };
@@ -19,6 +20,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		AB8900000000000000000014 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		AB8900000000000000000016 /* Account.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Account.xcconfig; sourceTree = "<group>"; };
 		291B0A8141E0F76A304D6029 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		8E94264721F66A5291BC0C5B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AB890000000000000000000B /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
@@ -56,6 +59,7 @@
 			isa = PBXGroup;
 			children = (
 				F00B56E0DCEE33A9A258AFB6 /* Origin89 */,
+				AB8900000000000000000016 /* Account.xcconfig */,
 				291B0A8141E0F76A304D6029 /* Signing.xcconfig */,
 				C6516E3FD84BCA0F3E0309D5 /* Products */,
 			);
@@ -64,6 +68,7 @@
 		F00B56E0DCEE33A9A258AFB6 /* Origin89 */ = {
 			isa = PBXGroup;
 			children = (
+				AB8900000000000000000014 /* AccountView.swift */,
 				8E94264721F66A5291BC0C5B /* Assets.xcassets */,
 				AB890000000000000000000F /* CodeScannerView.swift */,
 				AB890000000000000000000D /* NetworkView.swift */,
@@ -155,6 +160,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D725D6BB1B4CC521C45F1B0E /* Origin89App.swift in Sources */,
+				AB8900000000000000000015 /* AccountView.swift in Sources */,
 				AB890000000000000000000C /* SetupView.swift in Sources */,
 				AB890000000000000000000E /* NetworkView.swift in Sources */,
 				AB8900000000000000000010 /* CodeScannerView.swift in Sources */,

@@ -5,32 +5,58 @@ import os
 
 @main
 struct Origin89App: App {
-  @State private var flow = Self.makeFlow()
+  @State private var account: Account
+  @State private var flow: SetupFlow
 
-  @MainActor private static func makeFlow() -> SetupFlow {
-    let store = KeychainEnrolmentStore()
-    // Keychain items outlive an app delete; user defaults do not. A launch
-    // with no label suffix yet is a new install: drop what an old one kept.
-    // A failed removal is tried again on each launch until it succeeds, which
-    // then also drops any enrolment made in between.
+  @MainActor init() {
+    Self.clearPreviousInstall()
+    let account = Account(
+      client: Self.authKit.map { AuthKitClient(configuration: $0) },
+      store: KeychainAccountSessionStore())
+    _account = State(initialValue: account)
+    _flow = State(initialValue: Self.makeFlow(owner: account.owner))
+  }
+
+  /// Keychain items outlive an app delete; user defaults do not. A launch
+  /// with no label suffix yet is a new install: drop the enrolments and the
+  /// session an old one kept. A failed removal is tried again on each launch
+  /// until it succeeds, which then also drops any enrolment made in between.
+  @MainActor private static func clearPreviousInstall() {
     let defaults = UserDefaults.standard
     let pendingKey = "setup.clearPreviousInstall"
     if DeviceLabel.isNewInstall { defaults.set(true, forKey: pendingKey) }
-    if defaults.bool(forKey: pendingKey) {
-      do {
-        try store.removeAll()
-        defaults.removeObject(forKey: pendingKey)
-      } catch {
-        Logger(subsystem: SetupLog.subsystem, category: "flow").error(
-          "could not remove enrolments left from a previous install: \(String(describing: error), privacy: .public)"
-        )
-      }
+    guard defaults.bool(forKey: pendingKey) else { return }
+    do {
+      try KeychainEnrolmentStore.removeEveryAccount()
+      try KeychainAccountSessionStore().remove()
+      defaults.removeObject(forKey: pendingKey)
+    } catch {
+      Logger(subsystem: SetupLog.subsystem, category: "flow").error(
+        "could not remove what a previous install kept: \(String(describing: error), privacy: .public)"
+      )
     }
+  }
+
+  private static var authKit: AuthKitConfiguration? {
+    let clientID = Bundle.main.object(forInfoDictionaryKey: "WorkOSClientID") as? String
+    return clientID.flatMap { AuthKitConfiguration(clientID: $0) }
+  }
+
+  /// The flow for `owner`'s enrolments: signed out, those made signed out;
+  /// signed in, the account's own too. Each keeps its own last controller.
+  @MainActor private static func makeFlow(owner: AccountID?) -> SetupFlow {
+    let signedOut = KeychainEnrolmentStore()
+    let store: any EnrolmentStore =
+      owner.map {
+        AccountEnrolmentStore(own: KeychainEnrolmentStore(owner: $0), signedOut: signedOut)
+      } ?? signedOut
+    let lastController = DefaultsLastController(
+      key: owner.map { "setup.lastController.\($0.rawValue)" } ?? "setup.lastController")
     return SetupFlow(
       factory: RustControllerClientFactory(label: DeviceLabel.current),
       store: store,
       transportFactory: { BluetoothTransport(identifiers: .km43, codec: RustFragmentCodec()) },
-      lastController: DefaultsLastController(),
+      lastController: lastController,
       webSocketFactory: { WebSocketTransport.km43(address: $0) },
       addresses: DefaultsControllerAddresses(),
       browser: NetworkControllerBrowser.km43())
@@ -38,7 +64,18 @@ struct Origin89App: App {
 
   var body: some Scene {
     WindowGroup {
-      SetupView(flow: flow)
+      SetupView(flow: flow, account: account)
+        .id(ObjectIdentifier(flow))
+        .task { await account.refreshIfExpired() }
+        // Another account sees other enrolments: close this flow's connection
+        // first, then start the account's own flow.
+        .onChange(of: account.owner) { _, owner in
+          let previous = flow
+          Task {
+            await previous.suspend()
+            flow = Self.makeFlow(owner: owner)
+          }
+        }
     }
   }
 }

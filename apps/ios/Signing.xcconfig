@@ -9,4 +9,5 @@
 
 PRODUCT_BUNDLE_IDENTIFIER = com.origin89.apps.ios
 
+#include "Account.xcconfig"
 #include? "Local.xcconfig"
