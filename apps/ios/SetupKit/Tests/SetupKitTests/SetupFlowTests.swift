@@ -33,6 +33,8 @@ private actor FakeClient: ControllerClient {
   var holdHello = false
   var holdEnrolled = false
   var enrolledContinuation: CheckedContinuation<Void, Never>?
+  /// Waiting for a held `isEnrolled` or `hello` to start.
+  private var holdWaiters: [CheckedContinuation<Void, Never>] = []
   var helloContinuation: CheckedContinuation<Void, Never>?
   var writtenVersion: UInt32?
   var enrolled = false
@@ -60,6 +62,15 @@ private actor FakeClient: ControllerClient {
   }
   func restore(from store: any EnrolmentStore) async {}
   func holdEnrolledCheck() { holdEnrolled = true }
+  /// Returns once a held `isEnrolled` or `hello` is waiting.
+  func held() async {
+    if enrolledContinuation != nil || helloContinuation != nil { return }
+    await withCheckedContinuation { holdWaiters.append($0) }
+  }
+  private func wakeHoldWaiters() {
+    for waiter in holdWaiters { waiter.resume() }
+    holdWaiters = []
+  }
   func releaseEnrolledCheck() {
     enrolledContinuation?.resume()
     enrolledContinuation = nil
@@ -67,7 +78,10 @@ private actor FakeClient: ControllerClient {
   func isEnrolled() async -> Bool {
     if holdEnrolled {
       holdEnrolled = false
-      await withCheckedContinuation { enrolledContinuation = $0 }
+      await withCheckedContinuation {
+        enrolledContinuation = $0
+        wakeHoldWaiters()
+      }
     }
     return enrolled
   }
@@ -80,7 +94,12 @@ private actor FakeClient: ControllerClient {
   func holdHellos() { holdHello = true }
   func hello() async throws(SetupFailure) -> SessionReport {
     try record(.hello)
-    if holdHello { await withCheckedContinuation { helloContinuation = $0 } }
+    if holdHello {
+      await withCheckedContinuation {
+        helloContinuation = $0
+        wakeHoldWaiters()
+      }
+    }
     return SessionReport(reportsWiFi: false)
   }
   func scanWiFi(refresh: Bool) async throws(SetupFailure) -> NetworkScan {
@@ -525,10 +544,7 @@ private struct Factory: ControllerClientFactory {
   try flow.submitCode("valid")
   await client.holdEnrolledCheck()
   let run = Task { await flow.connect() }
-  for _ in 0..<1000 {
-    if await client.enrolledContinuation != nil { break }
-    await Task.yield()
-  }
+  await client.held()
   await flow.suspend()
   // Closing releases the check; without a close the connect would go on.
   await client.releaseEnrolledCheck()
@@ -567,10 +583,7 @@ private struct Factory: ControllerClientFactory {
   await flow.suspend()
   await client.holdHellos()
   let run = Task { await flow.setTime() }
-  for _ in 0..<1000 {
-    if await client.helloContinuation != nil { break }
-    await Task.yield()
-  }
+  await client.held()
   #expect(flow.state == .greeting)
   await flow.suspend()
   await run.value
