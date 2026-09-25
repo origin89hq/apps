@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 /// The exact length of a P-049 payload: `4 + 1 + 1 + 1 + 32 + 1 + 64`.
 pub const SETUP_CODE_LEN: usize = 104;
 
-const DEVICE_ID_BYTES: usize = 16;
+pub(crate) const DEVICE_ID_BYTES: usize = 16;
 const SECRET_BYTES: usize = 32;
 
 const PREFIX: &[u8] = b"km43";

@@ -114,6 +114,45 @@ public protocol EnrolmentStore: Sendable {
   func remove(deviceID: String) throws
   /// Remove every kept enrolment.
   func removeAll() throws
+  /// The `device_id` of every kept enrolment, sorted. Throws when the
+  /// storage cannot be read, as a locked phone's Keychain cannot, rather than
+  /// answering none.
+  func storedDeviceIDs() throws -> [String]
+}
+
+/// The ownership generation a kept enrolment belongs to: its controller and
+/// the `epoch` it was issued at. A factory reset raises the `epoch`. Neither
+/// is secret: both are on the controller's `Discover` answer.
+public struct ControllerGeneration: Sendable, Hashable, Identifiable {
+  public var id: Self { self }
+  public let deviceID: String
+  public let epoch: UInt32
+  public init(deviceID: String, epoch: UInt32) {
+    self.deviceID = deviceID
+    self.epoch = epoch
+  }
+}
+
+/// Reads the generation from an encoded enrolment. Implemented by the Rust
+/// core, which owns the encoding.
+public protocol GenerationReader: Sendable {
+  /// Nil for bytes that do not decode as an enrolment.
+  func generation(of enrolment: Data) -> ControllerGeneration?
+}
+
+extension EnrolmentStore {
+  /// The generation of every kept enrolment, sorted by `device_id`. An entry
+  /// that cannot be read, or that names another controller than the one it is
+  /// kept under, is left out. Throws when the list itself cannot be read.
+  public func generations(reader: any GenerationReader) throws -> [ControllerGeneration] {
+    try storedDeviceIDs().compactMap { deviceID in
+      guard var kept = load(deviceID: deviceID) else { return nil }
+      defer { kept.resetBytes(in: kept.startIndex..<kept.endIndex) }
+      guard let generation = reader.generation(of: kept), generation.deviceID == deviceID
+      else { return nil }
+      return generation
+    }
+  }
 }
 public protocol ControllerClient: Sendable {
   /// Take the enrolment `store` kept for this controller, before the first

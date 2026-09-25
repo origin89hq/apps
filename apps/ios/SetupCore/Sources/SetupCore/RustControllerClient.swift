@@ -38,6 +38,17 @@ public struct RustControllerClientFactory: ControllerClientFactory {
   }
 }
 
+/// Reads a kept enrolment's generation with the Rust core, which owns its
+/// encoding. The core clears its copy of the bytes.
+public struct RustGenerationReader: GenerationReader {
+  public init() {}
+  public func generation(of enrolment: Data) -> ControllerGeneration? {
+    Origin89SetupCore.keptGeneration(kept: enrolment).map {
+      ControllerGeneration(deviceID: $0.deviceId, epoch: $0.epoch)
+    }
+  }
+}
+
 /// One controller, one Rust `SetupSession`, driven over a ``FrameTransport``.
 actor RustControllerClient: ControllerClient {
   /// Frames that answer nothing outstanding (P-024) before a step gives up.

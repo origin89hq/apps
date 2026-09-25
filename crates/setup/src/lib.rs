@@ -78,6 +78,17 @@ pub fn resume_session(
     })
 }
 
+/// The controller and `epoch` an enrolment kept by an earlier launch was
+/// issued for, for linking that generation to a site. `None` when the bytes do
+/// not decode. The bytes are cleared either way; nothing secret is returned.
+#[uniffi::export]
+#[must_use]
+pub fn kept_generation(mut kept: Vec<u8>) -> Option<KeptGeneration> {
+    let generation = KeptGeneration::read(&kept);
+    kept.zeroize();
+    generation
+}
+
 #[uniffi::export]
 impl SetupSession {
     /// Start a session from a scanned or pasted setup code, enrolling as

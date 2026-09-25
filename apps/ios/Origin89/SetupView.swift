@@ -1,4 +1,5 @@
 import Origin89UI
+import SetupCore
 import SetupKit
 import SwiftUI
 
@@ -59,7 +60,9 @@ struct SetupView: View {
     }
     .tint(Color.origin89.action)
     .sheet(isPresented: $accountShown) {
-      AccountView(account: account, cloud: cloud, pairings: pairings)
+      AccountView(
+        account: account, cloud: cloud, pairings: pairings,
+        generations: { try flow.keptGenerations(reader: RustGenerationReader()) })
     }
     .confirmationDialog(
       confirming == .all ? "Forget all controllers?" : "Forget this controller?",
