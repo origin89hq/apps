@@ -41,3 +41,13 @@ extension SetupKit.WebSocketTransport {
       url: url, maximumMessage: Int(Origin89SetupCore.maxMessageBytes()))
   }
 }
+
+extension SetupKit.NetworkControllerBrowser {
+  /// Browses km43's DNS-SD service type for the TXT key naming the controller
+  /// (P-224). The app's `NSBonjourServices` must list the same type.
+  @MainActor public static func km43() -> NetworkControllerBrowser {
+    NetworkControllerBrowser(
+      serviceType: Origin89SetupCore.dnssdService(),
+      deviceIDKey: Origin89SetupCore.dnssdTxtDeviceId())
+  }
+}

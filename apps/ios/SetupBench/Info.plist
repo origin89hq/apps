@@ -8,5 +8,9 @@
 	<string>setup-bench</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>setup-bench connects to a controller over Bluetooth to run setup on the bench.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_km43._tcp</string>
+	</array>
 </dict>
 </plist>

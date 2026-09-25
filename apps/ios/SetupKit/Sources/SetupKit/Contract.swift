@@ -165,8 +165,8 @@ public struct DefaultsLastController: LastControllerStore {
 }
 
 /// The controller's address on the site network, one per controller
-/// `device_id`, as its authenticated `WifiStatus` last reported it. A candidate
-/// only: Discover checks it before use (P-225).
+/// `device_id`: the last one its authenticated `WifiStatus` reported or Hello
+/// succeeded at. A candidate only: Discover checks it before use (P-225).
 public protocol ControllerAddressStore: Sendable {
   func load(deviceID: String) -> String?
   /// Remember `address` for `deviceID`, or forget it with nil.
