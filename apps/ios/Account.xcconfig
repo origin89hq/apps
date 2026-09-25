@@ -1,0 +1,5 @@
+// WorkOS AuthKit client IDs are public and ship in the app. Debug signs in
+// against the staging environment, Release against production.
+
+WORKOS_CLIENT_ID[config=Debug] = client_01M3C9M944Y53VA9PJRCW8T5S6
+WORKOS_CLIENT_ID[config=Release] = client_01M3CC0Q23FPHK50YW1WXCNZ3S

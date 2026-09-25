@@ -7,6 +7,7 @@ import SwiftUI
 /// joins the network the session moves to Wi-Fi when this phone can reach it.
 struct SetupView: View {
   let flow: SetupFlow
+  let account: Account
 
   @State private var windowOpenedAt: Date?
   @State private var failedDuring: SetupFlow.State?
@@ -14,6 +15,7 @@ struct SetupView: View {
   @State private var networkStep: NetworkStep?
   @State private var confirming: Forget?
   @State private var forgetFailed = false
+  @State private var accountShown = false
   @Environment(\.scenePhase) private var scenePhase
 
   private enum Forget: Identifiable {
@@ -31,6 +33,15 @@ struct SetupView: View {
               Button("Start over") { Task { await startOver() } }
             }
           }
+          ToolbarItem(placement: .topBarTrailing) {
+            Button {
+              accountShown = true
+            } label: {
+              Image(
+                systemName: account.owner == nil ? "person.crop.circle" : "person.crop.circle.fill")
+            }
+            .accessibilityLabel("Account")
+          }
           ToolbarItem(placement: .topBarLeading) {
             Menu {
               if flow.knownController != nil {
@@ -45,6 +56,7 @@ struct SetupView: View {
         }
     }
     .tint(Color.origin89.action)
+    .sheet(isPresented: $accountShown) { AccountView(account: account) }
     .confirmationDialog(
       confirming == .all ? "Forget all controllers?" : "Forget this controller?",
       isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
@@ -56,7 +68,7 @@ struct SetupView: View {
     } message: { forget in
       Text(
         forget == .all
-          ? "This phone removes every pairing it keeps. Each controller needs its setup code and pairing window again."
+          ? "This phone removes every pairing it shows here. Each controller needs its setup code and pairing window again. Pairings made under another account stay."
           : "This phone removes its pairing with this controller. Its setup code and pairing window are needed again."
       )
     }
