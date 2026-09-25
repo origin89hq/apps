@@ -49,7 +49,7 @@ struct Origin89App: App {
     return baseURL.flatMap { CloudConfiguration(baseURL: $0) }
   }
 
-  private static func lastController(owner: AccountID?) -> DefaultsLastController {
+  nonisolated private static func lastController(owner: AccountID?) -> DefaultsLastController {
     DefaultsLastController(
       key: owner.map { "setup.lastController.\($0.rawValue)" } ?? "setup.lastController")
   }
