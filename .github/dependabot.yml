@@ -1,0 +1,54 @@
+# Started from origin89hq/engineering templates/dependabot.yml; see its docs/dependencies.md.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: cargo
+    directories: [/]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # The Xcode project pins its remote packages in the project's Package.resolved;
+  # the local Package.swift files under apps/ios have no remote dependencies.
+  - package-ecosystem: swift
+    directory: /apps/ios
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      swift:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope

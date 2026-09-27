@@ -1,0 +1,5 @@
+rules:
+  dependabot-cooldown:
+    config:
+      # Engineering's baseline cooldown; zizmor defaults to seven days.
+      days: 3
